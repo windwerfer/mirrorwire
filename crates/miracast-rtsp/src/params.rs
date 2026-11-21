@@ -1,7 +1,8 @@
 //! `wfd_*` parameter text: parse and encode (Wi-Fi Display spec, section on RTSP parameters).
 //!
-//! Bit layouts follow the spec as recalled; the CEA table is marked `[verify]` in
-//! `docs/agents/miracast.md` until checked against the spec text or a real source.
+//! Field order follows the spec grammar. Hardware-confirmed (miracast.md §15): profile bit 1 =
+//! CHP and CEA bit 7 = 1920x1080p30 (the TB336FU picked `02 02 00000080` and sent High-profile
+//! 1920x1080 at ~30 fps). Still `[verify]`: the level bits and the other CEA bits.
 
 use crate::message::ParseError;
 
@@ -37,7 +38,8 @@ pub fn parse_params(body: &str) -> Vec<(&str, &str)> {
 pub struct H264Codec {
     /// Bit 0 CBP, bit 1 CHP.
     pub profile: u8,
-    /// Bit 0 3.1, 1 3.2, 2 4.1, 3 4.2 (spec: levels 3.1 upwards) [verify]. In an offer this is
+    /// Bit 0 3.1, 1 3.2, 2 4.1, 3 4.2 [verify: the TB336FU picked 0x02 but its SPS says 4.0,
+    /// which fits no reading of this table; size the decoder from the SPS]. In an offer this is
     /// the highest level supported; a source may pick any lower one (seen on hardware: the
     /// TB336FU picked 3.2 against our 4.1 offer).
     pub level: u8,
@@ -153,7 +155,8 @@ impl VideoFormats {
     }
 }
 
-/// A CEA resolution/frame-rate entry (table bit position, `[verify]`).
+/// A CEA resolution/frame-rate entry (bit 7 = 1080p30 confirmed on hardware; the other bit
+/// positions are `[verify]`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Resolution {
     pub width: u16,
@@ -285,7 +288,7 @@ impl ClientRtpPorts {
     }
 }
 
-/// `wfd_presentation_URL`: `rtsp://192.168.173.1/wfd1.0/streamid=0 none`. Returns the first
+/// `wfd_presentation_URL`: `rtsp://192.168.49.1/wfd1.0/streamid=0 none`. Returns the first
 /// URL (the second item is the optional second stream, ignored).
 pub fn parse_presentation_url(s: &str) -> Result<String, ParseError> {
     let url = s.split_whitespace().next().unwrap_or("");
@@ -399,8 +402,8 @@ mod tests {
     #[test]
     fn url_and_params() {
         assert_eq!(
-            parse_presentation_url("rtsp://192.168.173.1/wfd1.0/streamid=0 none").unwrap(),
-            "rtsp://192.168.173.1/wfd1.0/streamid=0"
+            parse_presentation_url("rtsp://192.168.49.1/wfd1.0/streamid=0 none").unwrap(),
+            "rtsp://192.168.49.1/wfd1.0/streamid=0"
         );
         assert!(parse_presentation_url("http://x").is_err());
         assert!(parse_presentation_url("").is_err());

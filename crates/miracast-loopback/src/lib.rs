@@ -546,7 +546,7 @@ impl TestSource {
             acc: 0,
             pcc: 0,
             frame: 0,
-            session: "6B8B4567",
+            session: "448846178",
         }
     }
 
@@ -648,7 +648,7 @@ impl TestSource {
             .with_header("Session", format!("{};timeout=30", self.session))
             .with_header(
                 "Transport",
-                format!("RTP/AVP/UDP;unicast;client_port={port};server_port=15550"),
+                format!("RTP/AVP/UDP;unicast;client_port={port};server_port=7016"),
             );
         self.tcp.write_all(&ok.encode()).unwrap();
         // M7.

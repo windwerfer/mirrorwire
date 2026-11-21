@@ -562,7 +562,7 @@ mod tests {
 
     const M1: &str = "OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nRequire: org.wfa.wfd1.0\r\n\r\n";
     const M3_BODY: &str = "wfd_client_rtp_ports\r\nwfd_audio_codecs\r\nwfd_video_formats\r\nwfd_content_protection\r\nwfd_foo_bar\r\n";
-    const M4_BODY: &str = "wfd_video_formats: 00 00 01 04 00000080 00000000 00000000 00 0000 0000 00 none none\r\nwfd_audio_codecs: none\r\nwfd_presentation_URL: rtsp://192.168.173.80/wfd1.0/streamid=0 none\r\nwfd_client_rtp_ports: RTP/AVP/UDP;unicast 19000 0 mode=play\r\n";
+    const M4_BODY: &str = "wfd_video_formats: 00 00 01 04 00000080 00000000 00000000 00 0000 0000 00 none none\r\nwfd_audio_codecs: none\r\nwfd_presentation_URL: rtsp://192.168.49.1/wfd1.0/streamid=0 none\r\nwfd_client_rtp_ports: RTP/AVP/UDP;unicast 19000 0 mode=play\r\n";
 
     fn req(method: &str, uri: &str, cseq: u32, body: &str) -> Vec<u8> {
         Request::new(method, uri, cseq)
@@ -646,7 +646,7 @@ mod tests {
         assert_eq!(resp(&m[0]).status, 200);
         let setup = request(&m[1]);
         assert_eq!(setup.method, "SETUP"); // M6
-        assert_eq!(setup.uri, "rtsp://192.168.173.80/wfd1.0/streamid=0");
+        assert_eq!(setup.uri, "rtsp://192.168.49.1/wfd1.0/streamid=0");
         assert_eq!(
             setup.headers.get("Transport"),
             Some("RTP/AVP/UDP;unicast;client_port=19000")
@@ -654,16 +654,16 @@ mod tests {
         assert_eq!(s.state(), State::AwaitSetupReply);
 
         let ok = Response::new(200, setup.headers.cseq().unwrap())
-            .with_header("Session", "6B8B4567;timeout=30")
+            .with_header("Session", "448846178;timeout=30")
             .with_header(
                 "Transport",
-                "RTP/AVP/UDP;unicast;client_port=19000;server_port=15550",
+                "RTP/AVP/UDP;unicast;client_port=19000;server_port=7016",
             );
         let a = s.handle_input(&ok.encode(), t);
         let m = sent(&a);
         let play = request(&m[0]);
         assert_eq!(play.method, "PLAY"); // M7
-        assert_eq!(play.headers.get("Session"), Some("6B8B4567"));
+        assert_eq!(play.headers.get("Session"), Some("448846178"));
         assert_eq!(s.state(), State::AwaitPlayReply);
 
         let a = s.handle_input(
@@ -695,7 +695,7 @@ mod tests {
     fn keepalive_idr_and_teardown() {
         let t = Instant::now();
         let mut s = playing(t);
-        let a = s.handle_input(b"GET_PARAMETER rtsp://localhost/wfd1.0 RTSP/1.0\r\nCSeq: 9\r\nSession: 6B8B4567\r\n\r\n", t);
+        let a = s.handle_input(b"GET_PARAMETER rtsp://localhost/wfd1.0 RTSP/1.0\r\nCSeq: 9\r\nSession: 448846178\r\n\r\n", t);
         assert_eq!(resp(&sent(&a)[0]).status, 200);
         assert_eq!(resp(&sent(&a)[0]).headers.cseq(), Some(9));
 
@@ -706,7 +706,7 @@ mod tests {
         let a = s.teardown();
         let m = sent(&a);
         assert_eq!(request(&m[0]).method, "TEARDOWN");
-        assert_eq!(request(&m[0]).headers.get("Session"), Some("6B8B4567"));
+        assert_eq!(request(&m[0]).headers.get("Session"), Some("448846178"));
         assert_eq!(a[1], Action::StopMedia);
         assert!(matches!(a[2], Action::Close { .. }));
         assert_eq!(s.state(), State::Closed);

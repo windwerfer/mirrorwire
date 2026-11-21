@@ -1,5 +1,7 @@
-//! Wi-Fi Display information elements (spec-derived; bit positions are [verify] items in
-//! `docs/agents/miracast.md` section 2 until confirmed on hardware).
+//! Wi-Fi Display information elements. The device-type bits 1:0 and the session-availability
+//! bits 5:4 are confirmed on hardware (miracast.md §15): the TB336FU advertises 0x0010
+//! (source, available) and logged our 0x0011 as "WFD DeviceInfo: 17" and listed us as a sink.
+//! The other bitmap bits are not used.
 //!
 //! A WFD subelement is `id(1) length(2, big endian) payload`.
 
