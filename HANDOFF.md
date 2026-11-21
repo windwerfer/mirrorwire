@@ -41,6 +41,12 @@ Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink),
   - Fixes from the hardware runs: `194d4fc` bounded RTSP connect (`connect_within`, "the source did not start the stream"), `bccd794` decode log lines, `97e5b74` IDR request on queue overflow, `953735e` decode queue 6.
   - Result (run 6e): TB336FU 1080p shown at ~30 fps (1995 pictures/71 s), decode 10-12 ms (FilmCraft, wgpu), loss 0.12 %, clean TEARDOWN. No laptop screenshot (see open questions).
 
+- Step 11 (start screen D21 + guided Miracast flow, 2026-11-21):
+  - `124c903` decision D21 (Presenter large, Viewer small, "View your Android device with Miracast"; rejected: Miracast inside the viewer dialog).
+  - `d2d761a` typed `SinkEvent` (sink driver) and `FlowEvent` (NM join) instead of log strings.
+  - `595f8fe` start screen per D21; `Screen::Miracast` driven by the pure state machine `miracast_flow.rs` (instruction, waiting with Cancel, video, result pages for no device / group failed / source never started / no RTP with port+zone+firewall-cmd / video stopped); cancellable join; NM profile removed on Cancel, Back, Esc and window close (Drop waits up to 5 s).
+  - Not run on the owner's desktop: the container cannot read `journalctl --user` (no journal files), so the required KWin EACCES / "Atomic commit failed" check is impossible here; no GUI was started and no tablet check was done this round.
+
 ## Decisions
 - Miracast reuses `ViewerHandle` and the app's decoders; it is behind the non-default app feature `miracast`. The flags exist in every build and fail with a clear message without it.
 - Decode queue 6 for Miracast (like Android), with drop-to-keyframe plus an IDR request on overflow.
@@ -53,6 +59,8 @@ Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink),
 - See also miracast.md section 7 (sink first, sans-IO parsers, no HDCP/UIBC, audio demuxed not played, rejected: root helpers, direct wpa_supplicant D-Bus, GStreamer/FFmpeg demux, GPL code).
 
 ## Open questions
+- KWin check: `journalctl --user -b` is not readable from the research container (no journal files, `/var/log/journal` empty). Either run the GUI checks where the journal is readable or mount the journal read-only; until then no GUI starts on the owner's desktop.
+- The previous viewer runs (6a-6e, wgpu window) happened before the KWin rule; whether they caused the KWin DRM loss is unknown from here.
 - Laptop screenshot of the viewer: the xdg Screenshot portal request at 13:17:58 had an unknown outcome (no Response, request gone); not retried, so no dialog piles up on the owner's screen. Ask the owner for a photo/screenshot, or allow a portal screenshot.
 - Default app build (`portal` + `ffmpeg`) cannot link in this container (no libpipewire, no FFmpeg dev libs). Miracast was built and tested with `--no-default-features --features gui,filmcraft,miracast`. The default build with `--features miracast` (VAAPI decode) is untested: run it on the manager's box or after installing the dev packages.
 - `presenter::tests::test_source_streams_to_an_in_process_viewer` fails in the FFmpeg-less build (needs x264); unrelated to Miracast.
@@ -72,7 +80,7 @@ Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink),
 `git log --oneline 767ed3c..miracast-spike`; `cargo test -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback` (94 tests); `cargo clippy -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback --all-targets -- -D warnings`; `cargo fmt --all --check`; `cargo xtask layers`. `cargo xtask ci` cannot build in the research container (no libpipewire-0.3 dev package), unrelated to the spike.
 
 ## Next step
-Build the default app with `--features miracast` on a box with libpipewire and FFmpeg (VAAPI decode) and repeat run 6; then a home-screen entry ("Receive Miracast") and a cancellable NM join. Optionally `bind-activation: dbus-client` so a killed sink leaves no group (Ctrl-C today leaves the volatile profile active until NM drops it).
+Owner/manager: try the start screen button on the T480s (with the KWin journal check), then build the default app with `--features miracast` on a box with libpipewire and FFmpeg (VAAPI decode) and repeat run 6; then a home-screen entry ("Receive Miracast") and a cancellable NM join. Optionally `bind-activation: dbus-client` so a killed sink leaves no group (Ctrl-C today leaves the volatile profile active until NM drops it).
 
 ## HARDWARE RUN 5 (done 2026-11-21; driver script `~/tmp/mc-hw/driver-run5.sh`)
 `./target/release/miracast-sink-demo --nm --out stream.h264 --secs 300 2> sink-trace.log`; on the tablet: Settings -> Cast -> Enable wireless display, cancel the "wants to connect" prompt, tap "Wireless display". Watch for `attempt n/3 failed` (retry) and `diagnostic:` lines.
@@ -132,4 +140,4 @@ ffprobe -hide_banner stream.h264
 **What a good result looks like:** `sink-trace.log` shows M1..M7 in order, "start media on UDP 19000", rising video AU counts, no `close:` until you disconnect. Also useful: which `wfd_video_formats`/`wfd_audio_codecs` the tablet's M4 picked, and whether it rejected `wfd_audio_codecs: none` (then an LPCM offer is needed: miracast.md section 5).
 
 ## Commit
-Step 7: 468a665, 1e2651f, ecad42c, d3d2899, 1d3873a, 91987c4. Step 8: e4309af, 651f0f6, 658cb8c, df3ab68. Step 9: 1942535, 6ad2e1c, e66a624, 96c0e13, 8ab16e0, 03258f8, 877a2b9. Step 10: a4f80f8, 38f6d43, 90929b0, e5f3426, 194d4fc, bccd794, 97e5b74, 953735e, plus this docs commit (see `git log -1`). Not pushed (container has no GitHub access).
+Step 7: 468a665, 1e2651f, ecad42c, d3d2899, 1d3873a, 91987c4. Step 8: e4309af, 651f0f6, 658cb8c, df3ab68. Step 9: 1942535, 6ad2e1c, e66a624, 96c0e13, 8ab16e0, 03258f8, 877a2b9. Step 10: a4f80f8, 38f6d43, 90929b0, e5f3426, 194d4fc, bccd794, 97e5b74, 953735e, 7050dd9. Step 11: 124c903, d2d761a, 595f8fe, plus this docs commit (see `git log -1`). Not pushed (container has no GitHub access).
