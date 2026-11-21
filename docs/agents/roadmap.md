@@ -351,6 +351,11 @@ target), **planned**, **idea**. Update this file when an item moves.
     receive path, hardware validation with the owner.
   - Open check: whether the TB336FU still offers a Miracast source ("Cast"/"Wireless
     display"); stock Android dropped it, only some vendors ship it.
+  - **TODO (status: idea/optional):** Optional root prompt (explicit user click, never
+    automatic) to choose the P2P/Wi-Fi channel so that the group channel matches the STA
+    channel. Possibly behind statistics that detect frequent disconnects and attribute them to
+    a channel mismatch (group freq != STA freq) before offering it. Needs the owner's OK
+    (AGENTS.md §1.1 / §5: any privilege). Background: [miracast.md](miracast.md) §12.
 - **Android viewer polish:** zero-copy MediaCodec → `SurfaceTexture`/`AHardwareBuffer` → GL
   texture instead of the CPU YUV→RGBA copy; soft keyboard for the link field (today: QR via
   the camera app, or the keypad + mDNS list); a stable release keystore so updates install

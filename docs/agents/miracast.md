@@ -480,6 +480,11 @@ check.
   of run 5 it was on 2462 (same AP as the tablet), with no change by us. Note: a GO generally
   cannot start a group on a DFS channel such as 5300 MHz (no initiating radiation without
   radar detection), so even as GO we could not have followed a 5300 MHz STA.
+- **Optional later (roadmap TODO, idea/optional):** a root prompt, only on an explicit user
+  click and never automatic, to choose the P2P/Wi-Fi channel so the group channel matches the
+  STA channel; possibly offered only when statistics show frequent disconnects that line up
+  with a channel mismatch (group freq != STA freq). Any privilege needs the owner (AGENTS.md
+  §1.1, §5); nothing of this is implemented.
 - **What we do instead (rootless):** log the STA frequency next to every session (NM
   `AccessPoint.Frequency`); NM exposes no group frequency, so the hardware runs take it from
   the source's log. Retry formation, close a session quickly when the link is gone and
