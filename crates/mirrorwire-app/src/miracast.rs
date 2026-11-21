@@ -75,8 +75,9 @@ pub fn spawn(
 }
 
 /// Like [`spawn`] but without Wi-Fi Direct: the source's RTSP server is already reachable at
-/// `source` (an existing group, or a test source on localhost).
-#[cfg_attr(not(test), allow(dead_code))]
+/// `source` (an existing group, or a test source on localhost). Only the end-to-end test
+/// uses it, and that test needs the FilmCraft encoder.
+#[cfg(all(test, feature = "filmcraft"))]
 pub fn spawn_direct(
     source: SocketAddr,
     opts: MiracastOptions,
