@@ -534,7 +534,8 @@ the flags exist in every build and say so when the feature is missing).
   Back button -> TEARDOWN) -> leave the group. Driver log lines map to the status:
   `start media` = connected, `diagnostic: ...` = red error before the first picture (the
   firewall-command copy button applies) or HUD text after it, `stats: ...` = HUD line.
-- Decode thread: access units through a 2-deep channel (full: drop until the next keyframe);
+- Decode thread: access units through a 6-deep channel (full: drop until the next keyframe
+  and request an IDR via `RunOptions::idr_request`, rate-limited 1/s);
   the first keyframe's SPS (`h264::find_sps`) opens `decode::open_decoder` and sets the native
   size; a keyframe with a different SPS size (rotation) reopens it. Units before the first
   SPS are skipped. Only the newest picture goes to the GUI. Audio is ignored.

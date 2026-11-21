@@ -7,7 +7,7 @@
 //! the SPS 4.0). The result is a [`ViewerHandle`], so the GUI draws it like a QUIC stream.
 //!
 //! Threads: a session thread (NM join, then the blocking RTSP/RTP loop) feeds access units
-//! through a 2-deep channel into a decode thread, which keeps only the newest picture for the
+//! through a 6-deep channel into a decode thread, which keeps only the newest picture for the
 //! GUI (latency beats smoothness). A full channel drops units until the next keyframe.
 
 use crate::sync::LockExt;
@@ -25,8 +25,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Access units waiting for the decoder (bounded: a growing queue is a latency bug).
-const DECODE_QUEUE: usize = 2;
+/// Access units waiting for the decoder (bounded: a growing queue is a latency bug). Six
+/// like the Android viewer: an IDR picture decodes several times slower than a P picture, and
+/// with 2 (hardware run 6d) every IDR overflowed the queue, which forced a skip to the next
+/// keyframe, whose IDR overflowed it again: ~1.7 pictures/s although FilmCraft + RGBA
+/// conversion average ~22 ms per 1080p picture (offline, stream-run5-5). The queue is empty
+/// while the decoder keeps up, so latency only grows during a burst.
+const DECODE_QUEUE: usize = 6;
 /// The only stage the Miracast path can time (no sender clock).
 const STAGES: &[&str] = &["decode"];
 
