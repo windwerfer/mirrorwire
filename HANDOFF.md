@@ -1,7 +1,9 @@
 # HANDOFF (branch miracast-spike)
 
 ## Goal
-Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink), rootless via NetworkManager D-Bus WifiP2P + Polkit. Clean-room, new crates only, never touch main. Steps 1-6 one per session.
+Current (step 13, 2026-11-21): make `cargo xtask ci` green again (clippy dead_code) and take the FilmCraft encoder from craft-libs (`craft-video`, `h264-encode`) with one craft-libs pin for the workspace; then full CI on the box and merge into main.
+
+Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink), rootless via NetworkManager D-Bus WifiP2P + Polkit. Clean-room, new crates only, never touch main. Steps 1-6 one per session.
 
 ## Done
 - Step 1: `docs/agents/miracast.md` (packages, Polkit, firewall, P2P network structure, WFD IE, M1-M7 flow, media formats, Android expectations, Intel 8265 notes, spike architecture, test plan, commands to measure the T480s).
@@ -52,7 +54,15 @@ Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink),
   - `6777d3d` decision D22 (naming: button "View your Android device (Miracast-compatible)", Miracast only descriptively, trademark sentence in README, AppStream metainfo and miracast.md; rejected "Wi-Fi Display only"); feature `miracast` default with effect on Linux only (Linux target deps + `cfg(all(feature, target_os = "linux"))`); miracast.md §15 audit report (nothing derived) and [verify] resolution table.
   - Built here with `--no-default-features --features gui,filmcraft,miracast` (clippy, 11 app tests, release). Default build: manager's box. macOS/Windows with the new default: CI (no cross toolchain here).
 
+- Step 13 (CI fix + craft-libs encoder, 2026-11-21):
+  - `0fe552d` `spawn_direct` gated `#[cfg(all(test, feature = "filmcraft"))]` (its only caller is the FilmCraft end-to-end test); the default build's test target no longer has dead code. No `allow`.
+  - `8a6e5b7` encoder = `craft-video` (craft-libs `068e079c`, features `h264-encode` + `threads`, default-features off); decoder pin in mirrorwire-film bumped from `09dcbc22` to the same rev; `fuzz/Cargo.lock` updated; `deny.toml` drops `storytold/filmcraft`. One craft-video/craft-media in Cargo.lock. Feature `filmcraft`, `--encoder filmcraft` and the reported name `filmcraft-h264enc` unchanged.
+  - Measured old vs new (container, 4 vCPU): encoder 1080p ~63 ms both (122 ms without `threads`), same bitrate; decoder on `stream-run4d.h264` byte-identical I420, same timings. Numbers in filmcraft.md §3.1a.
+  - `d86f0db` D23 + filmcraft.md + architecture.md.
+
 ## Decisions
+- D23: FilmCraft encoder from craft-libs at the decoder's rev; `threads` feature on (slice parallelism; the decoder stays single-threaded via `with_threads(1)`). Rejected: keep depending on the full FilmCraft repo.
+- Encoder display name stays `filmcraft-h264enc` (it is sent in `StreamInfo`; renaming is not needed for the switch).
 - D22: Miracast only as a descriptive term; feature `miracast` default on Linux only.
 - Miracast reuses `ViewerHandle` and the app's decoders; it is behind the non-default app feature `miracast`. The flags exist in every build and fail with a clear message without it.
 - Decode queue 6 for Miracast (like Android), with drop-to-keyframe plus an IDR request on overflow.
@@ -65,6 +75,9 @@ Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink),
 - See also miracast.md section 7 (sink first, sans-IO parsers, no HDCP/UIBC, audio demuxed not played, rejected: root helpers, direct wpa_supplicant D-Bus, GStreamer/FFmpeg demux, GPL code).
 
 ## Open questions
+- Step 13: default-feature CI (`cargo xtask ci` with portal + ffmpeg), the x264-vs-FilmCraft bench, the FilmCraft loopback and `cargo ndk -t arm64-v8a clippy -p mirrorwire-android` were not run here (no libpipewire/FFmpeg/NDK). Decoder output was compared old rev vs new rev only (no `ffmpeg` CLI for the FFmpeg bit-exact check).
+- Cargo.lock now lists rav1e and ~30 crates via craft-video's weak `rav1e?/threading` in `threads`; they are not compiled (`cargo tree -i rav1e`: none) but show in cargo-deny's duplicate warnings. Upstream could split `threads` per codec.
+- Does craft-libs `068e079c` fix the fuzz finding (h264 `decoder.rs:532` subtract overflow)? If so, drop `continue-on-error` in `fuzz.yml`; not checked.
 - Flatpak: the Miracast-compatible button needs `--system-talk-name=org.freedesktop.NetworkManager` to work in the Flatpak; adding it is an owner decision (AGENTS.md 1.2, section 5). Until then it shows "not available" there; native builds work.
 - Remaining [verify] items (miracast.md §15): WFD level bits, other CEA bits, LPCM sample-rate bit, `bind-activation`. None affects the working path.
 - KWin check: `journalctl --user -b` is not readable from the research container (no journal files, `/var/log/journal` empty). Either run the GUI checks where the journal is readable or mount the journal read-only; until then no GUI starts on the owner's desktop.
@@ -85,10 +98,14 @@ Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink),
 - The research box is a VM without Wi-Fi/iw/NM: nothing about the Intel 8265 was measured; the doc lists what to run on the T480s (section 9). Facts marked [verify] in miracast.md (WFD IE bits, wfd_* masks, NM incoming GO negotiation = risk R1) come from memory of the specs and are unconfirmed.
 
 ## Verify
+Step 13: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --no-default-features --features gui,filmcraft,miracast -- -D warnings` and the same with `gui,filmcraft`; `cargo test --no-fail-fast -p mirrorwire-media -p mirrorwire-film -p mirrorwire-app --no-default-features --features mirrorwire-app/gui,mirrorwire-app/filmcraft,mirrorwire-app/miracast` (22 + 2 + 31/32, the one failure needs x264); `cargo deny --all-features --locked check advisories bans licenses sources`; `(cd fuzz && cargo check --locked)`; `grep -A2 'name = "craft-' Cargo.lock` (one rev). On the box: `cargo xtask ci`.
+
 `git log --oneline 767ed3c..miracast-spike`; `cargo test -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback` (94 tests); `cargo clippy -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback --all-targets -- -D warnings`; `cargo fmt --all --check`; `cargo xtask layers`. `cargo xtask ci` cannot build in the research container (no libpipewire-0.3 dev package), unrelated to the spike.
 
 ## Next step
-Owner/manager: try the start screen button on the T480s (with the KWin journal check), then build the default app with `--features miracast` on a box with libpipewire and FFmpeg (VAAPI decode) and repeat run 6; then a home-screen entry ("Receive Miracast") and a cancellable NM join. Optionally `bind-activation: dbus-client` so a killed sink leaves no group (Ctrl-C today leaves the volatile profile active until NM drops it).
+Step 13 done: run the full `cargo xtask ci` (default features), `cargo audit`/`cargo deny`, the FilmCraft loopback (`MIRRORWIRE_FEATURES=filmcraft scripts/loopback-test.sh 10 --encoder filmcraft`) and the Android clippy on the build box; if green, merge miracast-spike into main.
+
+Earlier: Owner/manager: try the start screen button on the T480s (with the KWin journal check), then build the default app with `--features miracast` on a box with libpipewire and FFmpeg (VAAPI decode) and repeat run 6; then a home-screen entry ("Receive Miracast") and a cancellable NM join. Optionally `bind-activation: dbus-client` so a killed sink leaves no group (Ctrl-C today leaves the volatile profile active until NM drops it).
 
 ## HARDWARE RUN 5 (done 2026-11-21; driver script `~/tmp/mc-hw/driver-run5.sh`)
 `./target/release/miracast-sink-demo --nm --out stream.h264 --secs 300 2> sink-trace.log`; on the tablet: Settings -> Cast -> Enable wireless display, cancel the "wants to connect" prompt, tap "Wireless display". Watch for `attempt n/3 failed` (retry) and `diagnostic:` lines.
@@ -148,4 +165,7 @@ ffprobe -hide_banner stream.h264
 **What a good result looks like:** `sink-trace.log` shows M1..M7 in order, "start media on UDP 19000", rising video AU counts, no `close:` until you disconnect. Also useful: which `wfd_video_formats`/`wfd_audio_codecs` the tablet's M4 picked, and whether it rejected `wfd_audio_codecs: none` (then an LPCM offer is needed: miracast.md section 5).
 
 ## Commit
+d86f0db Document the craft-libs encoder (D23) and one craft-libs pin
+8a6e5b7 Take the FilmCraft encoder from craft-libs (craft-video h264-encode)
+0fe552d Gate spawn_direct on its only user (test + filmcraft)
 Step 7: 468a665, 1e2651f, ecad42c, d3d2899, 1d3873a, 91987c4. Step 8: e4309af, 651f0f6, 658cb8c, df3ab68. Step 9: 1942535, 6ad2e1c, e66a624, 96c0e13, 8ab16e0, 03258f8, 877a2b9. Step 10: a4f80f8, 38f6d43, 90929b0, e5f3426, 194d4fc, bccd794, 97e5b74, 953735e, 7050dd9. Step 11: 124c903, d2d761a, 595f8fe, 81082c2. Step 12: 50431e2, 6777d3d, plus this docs commit (see `git log -1`). Not pushed (container has no GitHub access).
