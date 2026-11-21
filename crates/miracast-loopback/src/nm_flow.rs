@@ -41,6 +41,57 @@ pub struct Joined {
     pub rtsp: SocketAddr,
 }
 
+/// Progress of [`join_source`]; `Display` gives the trace line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlowEvent {
+    /// Our WFD IEs are set and discovery runs; the user must turn on wireless display.
+    Discovering,
+    /// A source was found and its group is being joined: the laptop is now listed on the
+    /// source (R2) and the user must tap it there (R1).
+    SourceFound {
+        name: String,
+        hw_address: String,
+        rtsp_port: u16,
+    },
+    /// Group formation failed and is tried again (the source asks the user again).
+    AttemptFailed {
+        attempt: u32,
+        attempts: u32,
+        reason: String,
+    },
+    Joined(GroupInfo),
+}
+
+impl std::fmt::Display for FlowEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Discovering => write!(
+                f,
+                "Wi-Fi Direct discovery started; enable wireless display on the source"
+            ),
+            Self::SourceFound {
+                name,
+                hw_address,
+                rtsp_port,
+            } => write!(
+                f,
+                "source {name} ({hw_address}), RTSP port {rtsp_port}: connecting; on the source \
+                 open Cast and tap this device (do not answer its connect prompt)"
+            ),
+            Self::AttemptFailed {
+                attempt,
+                attempts,
+                reason,
+            } => write!(
+                f,
+                "attempt {attempt}/{attempts} failed: {reason}; trying again (the source will \
+                 ask again: tap this device in its Cast list)"
+            ),
+            Self::Joined(g) => write!(f, "group: {g:?}"),
+        }
+    }
+}
+
 /// The strongest source matching `name` (if given).
 pub fn pick_source(sources: &[(PeerInfo, u16)], name: Option<&str>) -> Option<(PeerInfo, u16)> {
     let want = name.map(str::to_lowercase);
@@ -59,10 +110,10 @@ pub fn pick_source(sources: &[(PeerInfo, u16)], name: Option<&str>) -> Option<(P
 pub async fn join_source<P: P2pProvider>(
     sink: &Sink<P>,
     opts: &FlowOptions,
-    log: &mut (dyn FnMut(String) + Send),
+    log: &mut (dyn FnMut(FlowEvent) + Send),
 ) -> Result<Joined, P2pError> {
     sink.start().await?;
-    log("Wi-Fi Direct discovery started; enable wireless display on the source".into());
+    log(FlowEvent::Discovering);
     let start = Instant::now();
     let (peer, port) = loop {
         let sources = sink.sources().await?;
@@ -82,11 +133,11 @@ pub async fn join_source<P: P2pProvider>(
         }
         tokio::time::sleep(opts.poll).await;
     };
-    log(format!(
-        "source {} ({}), RTSP port {port}: connecting; on the source open Cast and tap this \
-         device (do not answer its connect prompt)",
-        peer.name, peer.hw_address
-    ));
+    log(FlowEvent::SourceFound {
+        name: peer.name.clone(),
+        hw_address: peer.hw_address.clone(),
+        rtsp_port: port,
+    });
     let attempts = opts.attempts.max(1);
     let mut attempt = 1;
     let group = loop {
@@ -95,10 +146,11 @@ pub async fn join_source<P: P2pProvider>(
             // Only a failed formation is worth another try; permissions, a missing device or
             // a vanished peer are not going to change.
             Err(P2pError::Backend(e)) if attempt < attempts => {
-                log(format!(
-                    "attempt {attempt}/{attempts} failed: {e}; trying again (the source will \
-                     ask again: tap this device in its Cast list)"
-                ));
+                log(FlowEvent::AttemptFailed {
+                    attempt,
+                    attempts,
+                    reason: e,
+                });
                 attempt += 1;
             }
             Err(e) => {
@@ -107,7 +159,7 @@ pub async fn join_source<P: P2pProvider>(
             }
         }
     };
-    log(format!("group: {group:?}"));
+    log(FlowEvent::Joined(group.clone()));
     let Some(ip) = group.peer_ip else {
         let _ = sink.stop().await;
         return Err(P2pError::Unsupported(format!(
@@ -175,7 +227,7 @@ mod tests {
         mock.set_group(client_group());
         let sink = Sink::new(mock, SinkConfig::default());
         let mut lines = Vec::new();
-        let j = join_source(&sink, &fast(), &mut |l| lines.push(l))
+        let j = join_source(&sink, &fast(), &mut |e| lines.push(e.to_string()))
             .await
             .unwrap();
         assert_eq!(j.rtsp, "192.168.49.1:7236".parse().unwrap());
@@ -194,7 +246,7 @@ mod tests {
         mock.fail_connects(2);
         let sink = Sink::new(mock, SinkConfig::default());
         let mut lines = Vec::new();
-        let j = join_source(&sink, &fast(), &mut |l| lines.push(l))
+        let j = join_source(&sink, &fast(), &mut |e| lines.push(e.to_string()))
             .await
             .unwrap();
         assert_eq!(j.rtsp, "192.168.49.1:7236".parse().unwrap());

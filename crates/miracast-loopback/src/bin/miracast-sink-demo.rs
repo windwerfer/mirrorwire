@@ -156,7 +156,9 @@ fn run_nm(out: &mut Out, rtp: &str, secs: u64, start: Instant) {
         }
         log_line(start, &format!("session {}: joining", session + 1));
         log_sta(&rt, &sink, start, "before join");
-        let joined = rt.block_on(join_source(&sink, &flow, &mut |l| log_line(start, &l)));
+        let joined = rt.block_on(join_source(&sink, &flow, &mut |e| {
+            log_line(start, &e.to_string())
+        }));
         let j = match joined {
             Ok(j) => j,
             Err(e) => {
@@ -179,7 +181,9 @@ fn run_nm(out: &mut Out, rtp: &str, secs: u64, start: Instant) {
             ..RunOptions::new(deadline.saturating_duration_since(Instant::now()))
         };
         log_line(start, &format!("connecting to the source at {}", j.rtsp));
-        let report = run_sink_logged(j.rtsp, udp, out, &opts, &mut |l| log_line(start, &l));
+        let report = run_sink_logged(j.rtsp, udp, out, &opts, &mut |e| {
+            log_line(start, &e.to_string())
+        });
         log_sta(&rt, &sink, start, "after session");
         log_line(
             start,
@@ -245,6 +249,8 @@ fn main() {
         ..RunOptions::new(Duration::from_secs(secs))
     };
     eprintln!("connecting to the source at {source}, RTP on UDP {rtp}, writing {out_path}");
-    let report = run_sink_logged(source, udp, &mut out, &opts, &mut |l| log_line(now, &l));
+    let report = run_sink_logged(source, udp, &mut out, &opts, &mut |e| {
+        log_line(now, &e.to_string())
+    });
     eprintln!("done: {report:?}");
 }

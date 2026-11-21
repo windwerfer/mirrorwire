@@ -255,7 +255,7 @@ fn silence_after_media_ends_the_session_as_link_lost() {
                 stats_every: Some(Duration::from_millis(100)),
                 ..RunOptions::new(Duration::from_secs(20))
             },
-            &mut |l| lines.push(l),
+            &mut |e| lines.push(e.to_string()),
         );
         (r, lines)
     });

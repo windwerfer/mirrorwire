@@ -168,7 +168,9 @@ fn session_nm(runtime: &tokio::runtime::Handle, ctx: &Ctx) {
         peer_name: ctx.peer.clone(),
         ..FlowOptions::default()
     };
-    let joined = runtime.block_on(join_source(&sink, &flow, &mut |l| note(&ctx.status, l)));
+    let joined = runtime.block_on(join_source(&sink, &flow, &mut |e| {
+        note(&ctx.status, e.to_string())
+    }));
     match joined {
         Ok(j) if !ctx.stop.load(Ordering::Acquire) => {
             note(
@@ -219,8 +221,8 @@ impl Ctx {
         };
         let mut forward = Forward::new(self.units.clone(), want_idr);
         let status = self.status.clone();
-        let report = run_sink_logged(source, udp, &mut forward, &opts, &mut |l| {
-            apply_log_line(&status, &l)
+        let report = run_sink_logged(source, udp, &mut forward, &opts, &mut |e| {
+            apply_log_line(&status, &e.to_string())
         });
         finish(&self.status, &report, self.stop.load(Ordering::Acquire));
     }

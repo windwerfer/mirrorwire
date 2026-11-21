@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use miracast_rtp::diag::{NoRtp, NoRtpWatchdog, DEFAULT_NO_RTP_AFTER};
+use miracast_rtp::diag::{NoRtp, NoRtpWatchdog, RtpStalled, DEFAULT_NO_RTP_AFTER};
 use miracast_rtp::ts::synth::{packetize, pes, psi_packets, rtp_packets, PID_AUDIO, PID_VIDEO};
 use miracast_rtp::{MediaSink, Receiver, RxStats};
 use miracast_rtsp::message::{parse_message, Message, Request, Response};
@@ -101,6 +101,65 @@ pub fn run_sink(
     deadline: Duration,
 ) -> SinkReport {
     run_sink_logged(source, udp, sink, &RunOptions::new(deadline), &mut |_| {})
+}
+
+/// What the sink driver reports while it runs. `Display` gives the trace line (the demo prints
+/// it); the app reacts to the typed variants instead of parsing text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SinkEvent {
+    /// The RTSP connection to the source is up.
+    Connected(SocketAddr),
+    /// One RTSP message; `outgoing` = sent by the sink.
+    Rtsp {
+        outgoing: bool,
+        text: String,
+    },
+    Negotiated(Negotiated),
+    MediaStarted {
+        rtp_port: u16,
+    },
+    MediaStopped,
+    /// RTSP worked but no RTP arrived (likely the firewall).
+    NoRtp(NoRtp),
+    /// Media flowed and then stopped.
+    Stalled(RtpStalled),
+    /// Media stayed away for [`RunOptions::close_on_silence`]; the session ends.
+    LinkLost {
+        silent: Duration,
+    },
+    Stats(String),
+    StopRequested,
+    /// The session ends with this reason.
+    Closed(String),
+}
+
+impl std::fmt::Display for SinkEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Connected(a) => write!(f, "RTSP connected to {a}"),
+            Self::Rtsp {
+                outgoing: true,
+                text,
+            } => write!(f, ">>> sink\n{text}"),
+            Self::Rtsp {
+                outgoing: false,
+                text,
+            } => write!(f, "<<< source\n{text}"),
+            Self::Negotiated(n) => write!(f, "negotiated: {n:?}"),
+            Self::MediaStarted { rtp_port } => write!(f, "start media on UDP {rtp_port}"),
+            Self::MediaStopped => write!(f, "stop media"),
+            Self::NoRtp(d) => write!(f, "diagnostic: {d}"),
+            Self::Stalled(d) => write!(f, "diagnostic: {d}"),
+            Self::LinkLost { silent } => write!(
+                f,
+                "link lost: no media for {} s, ending the session",
+                silent.as_secs()
+            ),
+            Self::Stats(line) => f.write_str(line),
+            Self::StopRequested => write!(f, "stop requested"),
+            Self::Closed(reason) => write!(f, "close: {reason}"),
+        }
+    }
 }
 
 /// Default for [`RunOptions::connect_within`]: the TB336FU listens within a second or two of
@@ -189,12 +248,12 @@ pub fn run_sink_logged(
     udp: UdpSocket,
     sink: &mut dyn MediaSink,
     opts: &RunOptions,
-    log: &mut dyn FnMut(String),
+    log: &mut dyn FnMut(SinkEvent),
 ) -> SinkReport {
     let deadline = opts.deadline;
     let mut report = SinkReport::default();
-    let fail = |report: &mut SinkReport, log: &mut dyn FnMut(String), reason: String| {
-        log(format!("close: {reason}"));
+    let fail = |report: &mut SinkReport, log: &mut dyn FnMut(SinkEvent), reason: String| {
+        log(SinkEvent::Closed(reason.clone()));
         report.close_reason = Some(reason);
     };
     let rtp_port = match udp.local_addr() {
@@ -226,7 +285,7 @@ pub fn run_sink_logged(
             return report;
         }
     };
-    log(format!("RTSP connected to {source}"));
+    log(SinkEvent::Connected(source));
     if let Err(e) = tcp
         .set_read_timeout(Some(Duration::from_millis(2)))
         .and_then(|()| udp.set_nonblocking(true))
@@ -248,16 +307,16 @@ pub fn run_sink_logged(
             .as_ref()
             .is_some_and(|s| s.load(Ordering::Acquire))
         {
-            log("stop requested".into());
+            log(SinkEvent::StopRequested);
             pending.extend(session.teardown());
         }
         match tcp.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                log(format!(
-                    "<<< source\n{}",
-                    String::from_utf8_lossy(&buf[..n])
-                ));
+                log(SinkEvent::Rtsp {
+                    outgoing: false,
+                    text: String::from_utf8_lossy(&buf[..n]).into_owned(),
+                });
                 pending.extend(session.handle_input(&buf[..n], Instant::now()));
             }
             Err(e)
@@ -287,22 +346,22 @@ pub fn run_sink_logged(
         }
         if let Some(d) = watchdog.poll(Instant::now()) {
             let d = d.with_interface(opts.interface.clone(), None);
-            log(format!("diagnostic: {d}"));
+            log(SinkEvent::NoRtp(d.clone()));
             report.no_rtp = Some(d);
         }
         if let Some(st) = watchdog.poll_stall(Instant::now()) {
-            log(format!("diagnostic: {st}"));
+            log(SinkEvent::Stalled(st));
             report.stalls += 1;
         }
         if let (Some(every), Some(since)) = (opts.stats_every, media_since) {
             if last_stats.elapsed() >= every {
                 last_stats = Instant::now();
-                log(stats_line(
+                log(SinkEvent::Stats(stats_line(
                     &rx.stats(),
                     report.idr_requests_sent,
                     session.idr_suppressed,
                     since.elapsed(),
-                ));
+                )));
             }
         }
         if let (Some(limit), Some(silent)) =
@@ -310,10 +369,7 @@ pub fn run_sink_logged(
         {
             if media && silent >= limit && !report.link_lost {
                 report.link_lost = true;
-                log(format!(
-                    "link lost: no media for {} s, ending the session",
-                    silent.as_secs()
-                ));
+                log(SinkEvent::LinkLost { silent });
                 // The source may be gone; the TEARDOWN is best effort.
                 pending.extend(session.teardown());
             }
@@ -336,31 +392,34 @@ pub fn run_sink_logged(
         for a in pending.drain(..) {
             match a {
                 Action::Send(b) => {
-                    log(format!(">>> sink\n{}", String::from_utf8_lossy(&b)));
+                    log(SinkEvent::Rtsp {
+                        outgoing: true,
+                        text: String::from_utf8_lossy(&b).into_owned(),
+                    });
                     if let Err(e) = tcp.write_all(&b) {
                         // A lost link must end the session, not the program.
                         let reason = format!("RTSP connection to the source failed: {e}");
-                        log(format!("close: {reason}"));
+                        log(SinkEvent::Closed(reason.clone()));
                         report.close_reason.get_or_insert(reason);
                         break 'outer;
                     }
                 }
                 Action::Negotiated(n) => {
-                    log(format!("negotiated: {n:?}"));
+                    log(SinkEvent::Negotiated(n.clone()));
                     report.negotiated = Some(n);
                 }
                 Action::StartMedia { rtp_port } => {
-                    log(format!("start media on UDP {rtp_port}"));
+                    log(SinkEvent::MediaStarted { rtp_port });
                     media = true;
                     media_since.get_or_insert_with(Instant::now);
                     watchdog.start(Instant::now());
                 }
                 Action::StopMedia => {
-                    log("stop media".into());
+                    log(SinkEvent::MediaStopped);
                     media = false;
                 }
                 Action::Close { reason } => {
-                    log(format!("close: {reason}"));
+                    log(SinkEvent::Closed(reason.clone()));
                     report.close_reason = Some(reason);
                     break 'outer;
                 }
@@ -374,10 +433,13 @@ pub fn run_sink_logged(
         // Deadline reached: end the session properly (hardware run 5 left it open, the source
         // only noticed when the group went away).
         let reason = "deadline reached".to_string();
-        log(format!("close: {reason}, sending TEARDOWN"));
+        log(SinkEvent::Closed(reason.clone()));
         for a in session.teardown() {
             if let Action::Send(b) = a {
-                log(format!(">>> sink\n{}", String::from_utf8_lossy(&b)));
+                log(SinkEvent::Rtsp {
+                    outgoing: true,
+                    text: String::from_utf8_lossy(&b).into_owned(),
+                });
                 let _ = tcp.write_all(&b);
             }
         }
@@ -387,12 +449,12 @@ pub fn run_sink_logged(
     report.rx = rx.stats();
     report.media_secs = media_since.map_or(0, |t| t.elapsed().as_secs());
     if opts.stats_every.is_some() && media_since.is_some() {
-        log(stats_line(
+        log(SinkEvent::Stats(stats_line(
             &report.rx,
             report.idr_requests_sent,
             report.idr_suppressed,
             Duration::from_secs(report.media_secs),
-        ));
+        )));
     }
     report.lost_packets = rx.lost_packets;
     report.bad_datagrams = rx.bad_datagrams;
