@@ -397,6 +397,10 @@ fn decode_loop(
             Picture::Yuv(img)
         };
         if totals.frames == 1 {
+            tracing::info!(
+                "miracast: first picture {width}x{height} via {}",
+                dec.name()
+            );
             let mut s = status.lock_ok();
             s.first_frame = true;
             s.note = None;
@@ -427,9 +431,10 @@ fn decode_loop(
                 .map(|(_, v)| v.mean)
                 .unwrap_or(0.0);
             s.last_second = format!(
-                "Miracast {:.1} fps, {:.2} Mbit/s, decode {:.2} ms",
-                s.source_fps, s.bitrate_mbps, s.decode_ms
+                "Miracast {:.1} fps, {:.2} Mbit/s, decode {:.2} ms, {} pictures",
+                s.source_fps, s.bitrate_mbps, s.decode_ms, totals.frames
             );
+            tracing::info!("miracast: {}", s.last_second);
             drop(s);
             window.clear();
             (w_start, w_frames, w_bytes) = (Instant::now(), 0, 0);
