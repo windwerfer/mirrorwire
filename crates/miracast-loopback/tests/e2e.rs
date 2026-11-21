@@ -155,11 +155,9 @@ fn unreachable_source_is_a_readable_close_reason() {
         .join()
         .unwrap();
     assert!(t.elapsed() < Duration::from_secs(5));
+    assert!(report.no_rtsp && report.wants_reconnect(), "{report:?}");
     let reason = report.close_reason.expect("close reason");
-    assert!(
-        reason.contains("cannot reach the source's RTSP server"),
-        "{reason}"
-    );
+    assert!(reason.contains("did not start the stream"), "{reason}");
     assert!(reason.contains(&addr.to_string()), "{reason}");
 }
 
@@ -343,4 +341,27 @@ fn stop_flag_ends_the_session_with_a_teardown() {
         "{td:?}"
     );
     assert_eq!(report.close_reason.as_deref(), Some("stopped by the user"));
+}
+
+#[test]
+fn rtsp_connect_is_bounded_even_with_a_long_session_deadline() {
+    let addr = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let t = Instant::now();
+    let report = run_sink_logged(
+        addr,
+        udp,
+        &mut Rec::default(),
+        &RunOptions {
+            connect_within: Duration::from_millis(700),
+            ..RunOptions::new(Duration::from_secs(3600))
+        },
+        &mut |_| {},
+    );
+    assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+    assert!(report.no_rtsp, "{report:?}");
+    assert!(report.close_reason.unwrap().contains("tap this device"));
 }

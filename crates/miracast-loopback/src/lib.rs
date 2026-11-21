@@ -43,6 +43,8 @@ pub struct SinkReport {
     pub stalls: u32,
     /// The session was ended because media stopped (see [`RunOptions::close_on_silence`]).
     pub link_lost: bool,
+    /// The source's RTSP server never answered within [`RunOptions::connect_within`].
+    pub no_rtsp: bool,
     /// Receive counters at the end.
     pub rx: RxStats,
     /// How long media flowed (PLAY to the end).
@@ -101,11 +103,18 @@ pub fn run_sink(
     run_sink_logged(source, udp, sink, &RunOptions::new(deadline), &mut |_| {})
 }
 
+/// Default for [`RunOptions::connect_within`]: the TB336FU listens within a second or two of
+/// the group forming (runs 3-5).
+pub const DEFAULT_CONNECT_WITHIN: Duration = Duration::from_secs(20);
+
 /// Settings of one sink run.
 #[derive(Debug, Clone)]
 pub struct RunOptions {
     /// Give up (connect and session) after this long.
     pub deadline: Duration,
+    /// Give up connecting to the source's RTSP server after this long (hardware run 6: a
+    /// group can form without the source ever starting its server).
+    pub connect_within: Duration,
     /// Report [`NoRtp`] if no datagram arrives this long after PLAY.
     pub no_rtp_after: Duration,
     /// The Wi-Fi Direct group interface, named in the [`NoRtp`] text.
@@ -124,6 +133,7 @@ impl SinkReport {
     /// by the user or the source): worth joining the group again.
     pub fn wants_reconnect(&self) -> bool {
         self.link_lost
+            || self.no_rtsp
             || self
                 .close_reason
                 .as_deref()
@@ -135,6 +145,7 @@ impl RunOptions {
     pub fn new(deadline: Duration) -> Self {
         Self {
             deadline,
+            connect_within: DEFAULT_CONNECT_WITHIN,
             no_rtp_after: DEFAULT_NO_RTP_AFTER,
             interface: None,
             close_on_silence: None,
@@ -197,13 +208,15 @@ pub fn run_sink_logged(
     let mut rx = Receiver::new();
     let start = Instant::now();
 
-    let mut tcp = match connect_to_source(source, deadline) {
+    let mut tcp = match connect_to_source(source, opts.connect_within.min(deadline)) {
         Ok(t) => t,
         Err(e) => {
             let reason = format!(
-                "cannot reach the source's RTSP server at {source}: {e} (is the Wi-Fi Direct \
-                 group up and wireless display enabled on the source?)"
+                "the source did not start the stream: no RTSP server at {source} ({e}). On \
+                 the source, open Cast and tap this device; answering its connect prompt \
+                 forms the Wi-Fi Direct group but starts no stream"
             );
+            report.no_rtsp = true;
             fail(&mut report, log, reason);
             return report;
         }
