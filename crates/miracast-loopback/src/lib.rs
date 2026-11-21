@@ -576,22 +576,29 @@ impl TestSource {
     /// Every 5th frame is an IDR. Returns the access unit sent.
     pub fn next_frame(&mut self) -> (Vec<Vec<u8>>, Vec<u8>) {
         let i = self.frame;
-        self.frame += 1;
         let au = access_unit(i.is_multiple_of(5), 200 + i * 90);
+        (self.datagrams_for(&au), au)
+    }
+
+    /// RTP datagrams carrying `au` (an Annex B access unit) as the next frame, plus PSI and
+    /// one audio PES, like [`next_frame`](Self::next_frame) does for its synthetic units.
+    pub fn datagrams_for(&mut self, au: &[u8]) -> Vec<Vec<u8>> {
+        let i = self.frame;
+        self.frame += 1;
         let pts = 90_000 + i as u64 * 3000;
         let mut tsp = psi_packets(self.pcc);
         self.pcc = (self.pcc + 1) & 0x0F;
         tsp.extend(packetize(
             PID_VIDEO,
             &mut self.vcc,
-            &pes(0xE0, pts, &au, false),
+            &pes(0xE0, pts, au, false),
         ));
         tsp.extend(packetize(
             PID_AUDIO,
             &mut self.acc,
             &pes(0xC0, pts, &[0xFF, 0xF1, i as u8], true),
         ));
-        (rtp_packets(&mut self.seq, pts as u32, &tsp), au)
+        rtp_packets(&mut self.seq, pts as u32, &tsp)
     }
 
     pub fn send_datagrams(&self, d: &[Vec<u8>]) {
