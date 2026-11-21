@@ -13,6 +13,8 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use miracast_rtp::diag::{NoRtp, NoRtpWatchdog, DEFAULT_NO_RTP_AFTER};
@@ -100,7 +102,7 @@ pub fn run_sink(
 }
 
 /// Settings of one sink run.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RunOptions {
     /// Give up (connect and session) after this long.
     pub deadline: Duration,
@@ -113,6 +115,8 @@ pub struct RunOptions {
     pub close_on_silence: Option<Duration>,
     /// Log a stats line this often (`None`: never).
     pub stats_every: Option<Duration>,
+    /// Set from another thread to end the session with a TEARDOWN (the GUI's Back button).
+    pub stop: Option<Arc<AtomicBool>>,
 }
 
 impl SinkReport {
@@ -135,6 +139,7 @@ impl RunOptions {
             interface: None,
             close_on_silence: None,
             stats_every: None,
+            stop: None,
         }
     }
 }
@@ -171,11 +176,25 @@ pub fn run_sink_logged(
     log: &mut dyn FnMut(String),
 ) -> SinkReport {
     let deadline = opts.deadline;
-    let rtp_port = udp.local_addr().unwrap().port();
+    let mut report = SinkReport::default();
+    let fail = |report: &mut SinkReport, log: &mut dyn FnMut(String), reason: String| {
+        log(format!("close: {reason}"));
+        report.close_reason = Some(reason);
+    };
+    let rtp_port = match udp.local_addr() {
+        Ok(a) => a.port(),
+        Err(e) => {
+            fail(
+                &mut report,
+                log,
+                format!("the RTP socket has no local port: {e}"),
+            );
+            return report;
+        }
+    };
     let mut session = SinkSession::new(sink_config(rtp_port));
     let mut watchdog = NoRtpWatchdog::new(rtp_port, opts.no_rtp_after);
     let mut rx = Receiver::new();
-    let mut report = SinkReport::default();
     let start = Instant::now();
 
     let mut tcp = match connect_to_source(source, deadline) {
@@ -185,15 +204,18 @@ pub fn run_sink_logged(
                 "cannot reach the source's RTSP server at {source}: {e} (is the Wi-Fi Direct \
                  group up and wireless display enabled on the source?)"
             );
-            log(format!("close: {reason}"));
-            report.close_reason = Some(reason);
+            fail(&mut report, log, reason);
             return report;
         }
     };
     log(format!("RTSP connected to {source}"));
-    tcp.set_read_timeout(Some(Duration::from_millis(2)))
-        .unwrap();
-    udp.set_nonblocking(true).unwrap();
+    if let Err(e) = tcp
+        .set_read_timeout(Some(Duration::from_millis(2)))
+        .and_then(|()| udp.set_nonblocking(true))
+    {
+        fail(&mut report, log, format!("cannot set up the sockets: {e}"));
+        return report;
+    }
     let mut media = false;
     let mut buf = [0u8; 4096];
     let mut dgram = vec![0u8; 2048];
@@ -203,6 +225,14 @@ pub fn run_sink_logged(
     let mut pending: Vec<Action> = Vec::new();
 
     'outer: while start.elapsed() < deadline {
+        if opts
+            .stop
+            .as_ref()
+            .is_some_and(|s| s.load(Ordering::Acquire))
+        {
+            log("stop requested".into());
+            pending.extend(session.teardown());
+        }
         match tcp.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {

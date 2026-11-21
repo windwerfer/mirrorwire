@@ -310,3 +310,37 @@ fn deadline_ends_the_session_with_a_teardown() {
     assert_eq!(report.close_reason.as_deref(), Some("deadline reached"));
     assert!(!report.wants_reconnect());
 }
+
+#[test]
+fn stop_flag_ends_the_session_with_a_teardown() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let listener = TestSource::listen();
+    let addr = listener.addr();
+    let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let sink = std::thread::spawn(move || {
+        let mut rec = Rec::default();
+        run_sink_logged(
+            addr,
+            udp,
+            &mut rec,
+            &RunOptions {
+                stop: Some(flag),
+                ..RunOptions::new(Duration::from_secs(20))
+            },
+            &mut |_| {},
+        )
+    });
+    let mut src = listener.accept();
+    src.negotiate();
+    stop.store(true, Ordering::Release);
+    let td = src.read_message();
+    let report = sink.join().unwrap();
+    assert!(
+        matches!(td, miracast_rtsp::message::Message::Request(ref r) if r.method == "TEARDOWN"),
+        "{td:?}"
+    );
+    assert_eq!(report.close_reason.as_deref(), Some("stopped by the user"));
+}
