@@ -203,14 +203,16 @@ impl Ctx {
                 )
             }
         };
+        let want_idr = Arc::new(AtomicBool::new(false));
         let opts = RunOptions {
+            idr_request: Some(want_idr.clone()),
             interface,
             close_on_silence: Some(Duration::from_secs(8)),
             stats_every: Some(Duration::from_secs(5)),
             stop: Some(self.stop.clone()),
             ..RunOptions::new(Duration::from_secs(24 * 3600))
         };
-        let mut forward = Forward::new(self.units.clone());
+        let mut forward = Forward::new(self.units.clone(), want_idr);
         let status = self.status.clone();
         let report = run_sink_logged(source, udp, &mut forward, &opts, &mut |l| {
             apply_log_line(&status, &l)
@@ -267,14 +269,18 @@ struct Forward {
     tx: Sender<VideoAccessUnit>,
     skipping: bool,
     dropped: u64,
+    /// Asks the sink driver for an IDR when units had to be dropped (run 6c: with only the
+    /// source's periodic keyframes, a slow software decoder showed under 1 picture/s).
+    want_idr: Arc<AtomicBool>,
 }
 
 impl Forward {
-    fn new(tx: Sender<VideoAccessUnit>) -> Self {
+    fn new(tx: Sender<VideoAccessUnit>, want_idr: Arc<AtomicBool>) -> Self {
         Self {
             tx,
             skipping: false,
             dropped: 0,
+            want_idr,
         }
     }
 }
@@ -290,6 +296,7 @@ impl MediaSink for Forward {
             Err(TrySendError::Full(_)) => {
                 self.dropped += 1;
                 self.skipping = true;
+                self.want_idr.store(true, Ordering::Release);
             }
             Err(TrySendError::Disconnected(_)) => {}
         }
@@ -480,9 +487,12 @@ mod tests {
     #[test]
     fn a_full_queue_drops_until_the_next_keyframe() {
         let (tx, rx) = bounded(1);
-        let mut f = Forward::new(tx);
+        let want_idr = Arc::new(AtomicBool::new(false));
+        let mut f = Forward::new(tx, want_idr.clone());
         f.video(unit(true, true));
-        f.video(unit(false, false)); // queue full: dropped, now skipping
+        assert!(!want_idr.load(Ordering::Acquire));
+        f.video(unit(false, false)); // queue full: dropped, now skipping, IDR wanted
+        assert!(want_idr.load(Ordering::Acquire));
         let _ = rx.try_recv();
         f.video(unit(false, false)); // still skipping (no keyframe yet)
         assert!(rx.try_recv().is_err());
@@ -611,10 +621,8 @@ mod tests {
         );
         assert!(s.connected && s.first_frame);
         handle.stop();
-        let td = src.read_message();
-        assert!(
-            matches!(td, miracast_rtsp::message::Message::Request(ref r) if r.method == "TEARDOWN"),
-            "{td:?}"
-        );
+        // A slow (debug-build) decoder may overflow the queue: IDR requests may come first.
+        let idr_requests = src.await_teardown();
+        assert!(idr_requests <= 6, "{idr_requests}");
     }
 }

@@ -2194,7 +2194,6 @@ dependencies = [
  "miracast-loopback",
  "miracast-nm",
  "miracast-rtp",
- "miracast-rtsp",
  "mirrorwire-media",
  "mirrorwire-net",
  "mirrorwire-proto",

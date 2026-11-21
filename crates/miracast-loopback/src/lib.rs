@@ -126,6 +126,10 @@ pub struct RunOptions {
     pub stats_every: Option<Duration>,
     /// Set from another thread to end the session with a TEARDOWN (the GUI's Back button).
     pub stop: Option<Arc<AtomicBool>>,
+    /// Set by the consumer when it dropped video (e.g. its decoder fell behind): the driver
+    /// sends an IDR request (M13, rate-limited) so decoding resumes without waiting for the
+    /// source's next periodic keyframe (about 4 s on the TB336FU).
+    pub idr_request: Option<Arc<AtomicBool>>,
 }
 
 impl SinkReport {
@@ -151,6 +155,7 @@ impl RunOptions {
             close_on_silence: None,
             stats_every: None,
             stop: None,
+            idr_request: None,
         }
     }
 }
@@ -312,6 +317,13 @@ pub fn run_sink_logged(
                 // The source may be gone; the TEARDOWN is best effort.
                 pending.extend(session.teardown());
             }
+        }
+        if opts
+            .idr_request
+            .as_ref()
+            .is_some_and(|f| f.swap(false, Ordering::AcqRel))
+        {
+            want_idr = true;
         }
         if want_idr {
             want_idr = false;
@@ -629,6 +641,25 @@ impl TestSource {
         assert!(r.body.contains("wfd_idr_request"), "body: {}", r.body);
         let ok = Response::new(200, r.headers.cseq().unwrap());
         self.tcp.write_all(&ok.encode()).unwrap();
+    }
+
+    /// Answers the sink's IDR requests until its TEARDOWN arrives (answered too); returns how
+    /// many IDR requests came first.
+    pub fn await_teardown(&mut self) -> u32 {
+        let mut idr = 0;
+        loop {
+            let r = match self.read_message() {
+                Message::Request(r) => r,
+                m => panic!("expected a request, got {m:?}"),
+            };
+            let ok = Response::new(200, r.headers.cseq().unwrap());
+            self.tcp.write_all(&ok.encode()).unwrap();
+            match r.method.as_str() {
+                "TEARDOWN" => return idr,
+                "SET_PARAMETER" if r.body.contains("wfd_idr_request") => idr += 1,
+                m => panic!("unexpected {m} before TEARDOWN"),
+            }
+        }
     }
 
     /// M8: source-initiated teardown; returns after the sink's reply.

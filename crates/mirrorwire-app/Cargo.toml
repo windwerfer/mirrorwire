@@ -19,7 +19,7 @@ portal = ["mirrorwire-media/portal"]
 filmcraft = ["mirrorwire-media/filmcraft"]
 static-ffmpeg = ["mirrorwire-media/static-ffmpeg"]
 # Miracast sink in the viewer (spike, docs/agents/miracast.md): `mirrorwire view --miracast`.
-miracast = ["dep:miracast-loopback", "dep:miracast-nm", "dep:miracast-rtp", "dep:miracast-rtsp"]
+miracast = ["dep:miracast-loopback", "dep:miracast-nm", "dep:miracast-rtp"]
 
 [lints]
 workspace = true
@@ -42,4 +42,3 @@ dirs = "7"
 miracast-loopback = { path = "../miracast-loopback", optional = true }
 miracast-nm = { path = "../miracast-nm", optional = true }
 miracast-rtp = { path = "../miracast-rtp", optional = true }
-miracast-rtsp = { path = "../miracast-rtsp", optional = true }

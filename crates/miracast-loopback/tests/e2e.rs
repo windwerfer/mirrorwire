@@ -365,3 +365,34 @@ fn rtsp_connect_is_bounded_even_with_a_long_session_deadline() {
     assert!(report.no_rtsp, "{report:?}");
     assert!(report.close_reason.unwrap().contains("tap this device"));
 }
+
+#[test]
+fn a_consumer_idr_request_reaches_the_source() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let listener = TestSource::listen();
+    let addr = listener.addr();
+    let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let flag = Arc::new(AtomicBool::new(false));
+    let req = flag.clone();
+    let sink = std::thread::spawn(move || {
+        run_sink_logged(
+            addr,
+            udp,
+            &mut Rec::default(),
+            &RunOptions {
+                idr_request: Some(req),
+                ..RunOptions::new(Duration::from_secs(20))
+            },
+            &mut |_| {},
+        )
+    });
+    let mut src = listener.accept();
+    src.negotiate();
+    flag.store(true, Ordering::Release);
+    src.expect_idr_request();
+    src.teardown();
+    let report = sink.join().unwrap();
+    assert_eq!(report.idr_requests_sent, 1);
+    assert!(!flag.load(Ordering::Acquire), "consumed");
+}
