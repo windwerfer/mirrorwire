@@ -379,6 +379,19 @@ target), **planned**, **idea**. Update this file when an item moves.
   - Note: the earlier line "AirPlay is not viable" (Miracast entry) meant macOS as a Wi-Fi
     Direct platform, not an AirPlay receiver. (The "Not goals" line in decisions.md also covers
     AirPlay receiver/sender; it would need revisiting if this is adopted.)
+- **Chromecast sender (mirror the desktop to a Chromecast / Google TV)** — status: idea/parked,
+  owner decides (owner 2026-11-21). **DO NOT START** until the owner has a Cast test device;
+  he considers it as unlikely as AirPlay.
+  - Direction: MirrorWire sends only. Receiving from Android's Cast menu needs Google device
+    certificates and is not feasible; Miracast already covers receiving from Android.
+  - Easy part: mDNS discovery, TLS channel (port 8009), protobuf CastMessage framing, JSON
+    control namespaces.
+  - Hard part: live mirroring needs the Cast Streaming protocol (offer/answer, RTP, AES,
+    bandwidth adaptation). No official public spec; Google's Open Screen library (Chromium,
+    BSD) may be read as documentation under D20 since it is permissively licensed.
+  - Effort: about the same as the Miracast work or more, not half. Needs a real Chromecast or
+    Google TV for testing; the TB336FU tablet cannot be used.
+  - Note: the "Not goals" line in decisions.md may need revisiting if this is adopted.
 - **Android viewer polish:** zero-copy MediaCodec → `SurfaceTexture`/`AHardwareBuffer` → GL
   texture instead of the CPU YUV→RGBA copy; soft keyboard for the link field (today: QR via
   the camera app, or the keypad + mDNS list); a stable release keystore so updates install
