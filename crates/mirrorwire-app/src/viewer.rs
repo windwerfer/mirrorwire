@@ -89,9 +89,6 @@ pub struct ViewerStatus {
     pub link: LinkHud,
     /// The bottleneck verdict line (see `bottleneck.rs`), updated once a second.
     pub bottleneck: String,
-    /// Progress text for sources without the QUIC connect steps (Miracast); when set, the
-    /// connecting screen shows it instead of the step list.
-    pub note: Option<String>,
 }
 
 #[derive(Default)]

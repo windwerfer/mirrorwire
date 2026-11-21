@@ -5,6 +5,8 @@ mod capture_prefs;
 mod gui;
 #[cfg(feature = "miracast")]
 mod miracast;
+#[cfg(feature = "miracast")]
+mod miracast_flow;
 mod presenter;
 mod session;
 mod sync;

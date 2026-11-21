@@ -571,3 +571,29 @@ object was gone afterwards, outcome unknown; not retried, to avoid a dialog on t
 screen. Evidence is the viewer log (first picture, per-second picture counts) and the
 tablet screenshots `t27`-`t30` (casting). Group formation needed the automatic retry in 3 of
 5 runs.
+
+## 14. Start screen flow (D21, 2026-11-21)
+
+Start screen: large "Presenter", small "Viewer", "View your Android device with Miracast"
+(feature `miracast` only), "Advanced" (UDP port) collapsed. The Miracast button opens
+`Screen::Miracast` (`gui/miracast.rs`), driven by the pure state machine
+`mirrorwire-app/src/miracast_flow.rs`:
+
+| phase | from | shown |
+|---|---|---|
+| Starting / Searching | button, `FlowEvent::Discovering` | "On your Android device open Settings > Cast (Wireless display) and turn wireless display on" + spinner + Cancel |
+| Joining {peer, attempt} | `SourceFound`, `AttemptFailed` | "On <peer>, tap "<this computer's name>" (may be listed as "Wireless display"); if it asks to connect, choose Cancel and tap it in the list", plus "try n of 3" |
+| Connecting | `Joined` | "Connected to <peer>. Starting the stream…" |
+| Streaming {warning} | `SinkEvent::MediaStarted`, `NoRtp`, `Stalled` | the normal video view once a picture exists; before that the firewall text (port, zone, `firewall-cmd` with a Copy button) |
+| Failed(issue) / Ended | join error, `SinkReport` | result page with Try again / Back: no device found, group did not form, "did not start casting" (tap hint), "Video stopped" (link lost), casting stopped on the device |
+
+R1/R2 order: discovery starts at the click; the laptop becomes visible on the device when the
+profile activates after the device was found, and only then the user is told to tap it.
+The sink driver and the join report typed `SinkEvent`/`FlowEvent` (Display = the old trace
+text). Cancel, Back, Esc and closing the window set the stop flag: the NM join is cancelled
+(`tokio::select!` on the flag), `Sink::stop` leaves the group and removes the volatile
+profile, and only then the final phase is published; a new attempt and the window's `Drop`
+wait (up to 5 s) for `MiracastSession::finished`. Tests: 7 state-machine tests, the
+localhost end-to-end test now also checks Video and Ended after Cancel. Not run on the
+desktop this round: the container cannot read the user journal for the required KWin check,
+so no GUI was started on the owner's machine.

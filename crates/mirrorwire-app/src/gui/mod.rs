@@ -24,6 +24,8 @@ use std::time::Instant;
 /// the pipeline leaves the encoder alone when the adaptive bitrate moves its cap
 /// (`pipeline::maybe_replace_encoder`, `quality_mode`). Only a change of the user's own
 /// setting applies. FEC and pacing still follow the link.
+#[cfg(feature = "miracast")]
+mod miracast;
 mod present;
 mod scan;
 mod video;
@@ -71,7 +73,16 @@ enum Screen {
     Home,
     Present,
     View,
+    /// "View your Android device with Miracast" (D21; only reachable with feature `miracast`).
+    #[cfg_attr(not(feature = "miracast"), allow(dead_code))]
+    Miracast,
 }
+
+/// The running Miracast flow next to `watching` (feature `miracast`; `()` without it).
+#[cfg(feature = "miracast")]
+type MiracastState = crate::miracast::MiracastSession;
+#[cfg(not(feature = "miracast"))]
+type MiracastState = ();
 
 pub fn run(
     launch: GuiLaunch,
@@ -176,6 +187,7 @@ pub fn run(
                     cursor_tex: None,
                     cursor_rate: (Instant::now(), 0, 0.0),
                     miracast: None,
+                    miracast_session: None,
                 };
                 if let Some(target) = initial {
                     app.screen = Screen::View;
@@ -267,6 +279,10 @@ struct MirrorApp {
     cursor_rate: (Instant, u64, f64),
     /// Watching a Miracast source (`view --miracast`), with its peer-name filter; for Retry.
     miracast: Option<Option<String>>,
+    /// The last Miracast flow; kept after Cancel so closing the window can wait for its NM
+    /// cleanup.
+    #[cfg_attr(not(feature = "miracast"), allow(dead_code))]
+    miracast_session: Option<MiracastState>,
 }
 
 impl MirrorApp {
@@ -303,17 +319,20 @@ impl MirrorApp {
         ));
     }
 
-    /// `view --miracast`: a Miracast source through the same video view (feature `miracast`).
+    /// The Miracast button (D21) and `view --miracast`: starts discovery at once, so this
+    /// computer is visible and waiting before the user taps it on the Android device.
     #[cfg(feature = "miracast")]
     fn connect_miracast(&mut self, ctx: &egui::Context, peer: Option<String>) {
         let repaint = ctx.clone();
+        self.disconnect(ctx);
+        self.wait_for_miracast_cleanup();
         self.error = None;
         self.texture = None;
         self.yuv = None;
         self.cursor_tex = None;
         self.last_target = None;
         self.miracast = Some(peer.clone());
-        self.watching = Some(crate::miracast::spawn(
+        let (viewer, session) = crate::miracast::spawn(
             &self.runtime,
             crate::miracast::MiracastOptions {
                 hwdec: self.hwdec,
@@ -323,12 +342,38 @@ impl MirrorApp {
                 rtp_port: 19000,
             },
             Some(Arc::new(move || repaint.request_repaint())),
-        ));
+        );
+        self.watching = Some(viewer);
+        self.miracast_session = Some(session);
+        self.screen = Screen::Miracast;
+    }
+
+    /// A previous flow must have left its Wi-Fi Direct group before a new one starts or the
+    /// app exits (its `stop_find`/deactivate would hit the new one, or the profile would stay).
+    #[cfg(feature = "miracast")]
+    fn wait_for_miracast_cleanup(&mut self) {
+        if let Some(old) = self.miracast_session.take() {
+            if let Some(h) = self.watching.take() {
+                h.stop();
+            }
+            let waited = old.finished.recv_timeout(std::time::Duration::from_secs(5));
+            if waited.is_err() && old.phase().is_active() {
+                tracing::warn!("miracast: the previous session did not finish in 5 s");
+            }
+        }
     }
 
     #[cfg(not(feature = "miracast"))]
     fn connect_miracast(&mut self, _ctx: &egui::Context, _peer: Option<String>) {
         self.error = Some("this build has no Miracast support (cargo feature `miracast`)".into());
+    }
+
+    #[cfg(not(feature = "miracast"))]
+    fn wait_for_miracast_cleanup(&mut self) {}
+
+    #[cfg(not(feature = "miracast"))]
+    fn miracast_ui(&mut self, ui: &mut egui::Ui) {
+        self.go_home(ui.ctx());
     }
 
     fn disconnect(&mut self, ctx: &egui::Context) {
@@ -382,53 +427,72 @@ impl MirrorApp {
         ui.weak(format!("Log: {}", self.log.path().display()));
     }
 
+    /// Start screen (D21): a large Presenter button, a small Viewer button, the Miracast
+    /// button (feature `miracast`), and the rarely needed settings under "Advanced".
     fn home_ui(&mut self, ui: &mut egui::Ui) {
         ui.add_space(40.0);
         ui.vertical_centered(|ui| {
             ui.heading("MirrorWire");
-            ui.add_space(8.0);
-            ui.label("Share this screen, or view a presenter on the network.");
             ui.add_space(24.0);
             let present = ui.add_enabled(
                 PRESENT_AVAILABLE,
-                egui::Button::new("Present this screen").min_size(egui::vec2(240.0, 36.0)),
+                egui::Button::new(egui::RichText::new("Presenter").size(24.0).strong())
+                    .min_size(egui::vec2(320.0, 72.0)),
             );
             if present.clicked() {
                 self.start_presenting(ui.ctx());
             }
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.weak("UDP port:");
-                if ui
-                    .add(egui::DragValue::new(&mut self.present_port).range(1..=65535))
-                    .changed()
-                {
-                    if let Err(e) =
-                        mirrorwire_net::settings::save_port(&self.config_dir, self.present_port)
-                    {
-                        tracing::warn!("could not save port: {e:#}");
-                    }
-                }
-            });
-            ui.weak(
-                "The viewer finds this port automatically (mDNS, QR and the link all include it).",
-            );
+            ui.weak("Share this screen.");
             if !PRESENT_AVAILABLE {
-                ui.add_space(4.0);
                 ui.weak("Screen capture is not available on this platform yet.");
             }
-            ui.add_space(12.0);
+            ui.add_space(16.0);
             if ui
-                .add(egui::Button::new("View").min_size(egui::vec2(240.0, 36.0)))
+                .add(egui::Button::new("Viewer").min_size(egui::vec2(160.0, 28.0)))
                 .clicked()
             {
                 self.error = None;
                 self.screen = Screen::View;
             }
+            if cfg!(feature = "miracast") {
+                ui.add_space(12.0);
+                if ui
+                    .add(
+                        egui::Button::new("View your Android device with Miracast")
+                            .min_size(egui::vec2(320.0, 32.0)),
+                    )
+                    .clicked()
+                {
+                    self.connect_miracast(ui.ctx(), None);
+                }
+            }
             if let Some(err) = &self.error {
                 ui.add_space(16.0);
                 ui.colored_label(egui::Color32::LIGHT_RED, err);
             }
+            ui.add_space(24.0);
+            egui::CollapsingHeader::new("Advanced")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.weak("Presenter UDP port:");
+                        if ui
+                            .add(egui::DragValue::new(&mut self.present_port).range(1..=65535))
+                            .changed()
+                        {
+                            if let Err(e) = mirrorwire_net::settings::save_port(
+                                &self.config_dir,
+                                self.present_port,
+                            ) {
+                                tracing::warn!("could not save port: {e:#}");
+                            }
+                        }
+                    });
+                    ui.weak(
+                        "The viewer finds this port automatically (mDNS, QR and the link all \
+                         include it).",
+                    );
+                });
         });
         ui.add_space(24.0);
         self.footer(ui);
@@ -576,12 +640,8 @@ impl MirrorApp {
         }
         ui.add_space(8.0);
         let progress = status.trace.snapshot();
-        if let Some(note) = &status.note {
-            ui.label(note);
-        } else {
-            for step in &progress.steps {
-                step_row(ui, step);
-            }
+        for step in &progress.steps {
+            step_row(ui, step);
         }
         if let Some(err) = progress.error.as_ref().or(status.error.as_ref()) {
             ui.add_space(8.0);
@@ -653,6 +713,7 @@ impl eframe::App for MirrorApp {
             Screen::View => {
                 egui::CentralPanel::default().show(ui, |ui| self.browse_ui(ui));
             }
+            Screen::Miracast => self.miracast_ui(ui),
         }
     }
 }
@@ -662,6 +723,9 @@ impl Drop for MirrorApp {
         if let Some(h) = self.watching.take() {
             h.stop();
         }
+        // Closing the window during a Miracast flow: leave the group and remove our NM
+        // profile before the runtime goes away.
+        self.wait_for_miracast_cleanup();
         if let Some(h) = self.presenting.take() {
             h.stop();
         }

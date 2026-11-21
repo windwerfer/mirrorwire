@@ -10,11 +10,12 @@
 //! through a 6-deep channel into a decode thread, which keeps only the newest picture for the
 //! GUI (latency beats smoothness). A full channel drops units until the next keyframe.
 
+use crate::miracast_flow::Phase;
 use crate::sync::LockExt;
 use crate::viewer::{DisplayFrame, Picture, Totals, ViewerHandle, ViewerStatus};
 use anyhow::Result;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
-use miracast_loopback::{run_sink_logged, RunOptions, SinkReport};
+use miracast_loopback::{run_sink_logged, RunOptions, SinkEvent, SinkReport};
 use miracast_rtp::h264::{find_sps, Sps};
 use miracast_rtp::{AudioFrame, MediaSink, VideoAccessUnit};
 use mirrorwire_media::decode::{self, HwDecode, RgbaConverter, SoftwareDecoder, VideoDecoder};
@@ -46,12 +47,29 @@ pub struct MiracastOptions {
     pub rtp_port: u16,
 }
 
-/// Starts the Wi-Fi Direct join and the stream; the handle works like a QUIC viewer's.
+/// The Miracast side of a running flow, next to its [`ViewerHandle`].
+pub struct MiracastSession {
+    /// Where the flow is (see [`crate::miracast_flow`]); the GUI renders it.
+    pub phase: Arc<Mutex<Phase>>,
+    /// Receives `()` once the session thread has finished, including leaving the Wi-Fi Direct
+    /// group and removing our NetworkManager profile.
+    pub finished: Receiver<()>,
+}
+
+impl MiracastSession {
+    pub fn phase(&self) -> Phase {
+        self.phase.lock_ok().clone()
+    }
+}
+
+/// Starts discovery, the join and the stream (the "View your Android device with Miracast"
+/// button, D21); the viewer handle works like a QUIC viewer's. `stop()` on it cancels at any
+/// point, also while waiting for the user on the Android device, and cleans up NM.
 pub fn spawn(
     runtime: &tokio::runtime::Handle,
     opts: MiracastOptions,
     on_frame: Option<Arc<dyn Fn() + Send + Sync>>,
-) -> ViewerHandle {
+) -> (ViewerHandle, MiracastSession) {
     let runtime = runtime.clone();
     start(opts, on_frame, move |ctx| session_nm(&runtime, ctx))
 }
@@ -63,15 +81,17 @@ pub fn spawn_direct(
     source: SocketAddr,
     opts: MiracastOptions,
     on_frame: Option<Arc<dyn Fn() + Send + Sync>>,
-) -> ViewerHandle {
+) -> (ViewerHandle, MiracastSession) {
     start(opts, on_frame, move |ctx| {
-        ctx.stream(source, None);
+        let end = ctx.stream(source, None);
+        ctx.set_phase(|p| p.on_end(&end.0, end.1));
     })
 }
 
 /// What the session thread needs.
 struct Ctx {
     status: Arc<Mutex<ViewerStatus>>,
+    phase: Arc<Mutex<Phase>>,
     stop: Arc<AtomicBool>,
     units: Sender<VideoAccessUnit>,
     rtp_port: u16,
@@ -82,18 +102,20 @@ fn start(
     opts: MiracastOptions,
     on_frame: Option<Arc<dyn Fn() + Send + Sync>>,
     session: impl FnOnce(&Ctx) + Send + 'static,
-) -> ViewerHandle {
+) -> (ViewerHandle, MiracastSession) {
     let status = Arc::new(Mutex::new(ViewerStatus {
         decoder: "…".into(),
-        note: Some("Miracast: starting".into()),
         ..ViewerStatus::default()
     }));
     let (frames_tx, frames) = bounded::<DisplayFrame>(1);
     let (done_tx, done) = bounded(1);
     let (units_tx, units_rx) = bounded::<VideoAccessUnit>(DECODE_QUEUE);
     let stop = Arc::new(AtomicBool::new(false));
+    let phase = Arc::new(Mutex::new(Phase::Starting));
+    let (finished_tx, finished) = bounded(1);
     let ctx = Ctx {
         status: status.clone(),
+        phase: phase.clone(),
         stop: stop.clone(),
         units: units_tx,
         rtp_port: opts.rtp_port,
@@ -121,16 +143,23 @@ fn start(
     }
     let spawned = std::thread::Builder::new()
         .name("miracast-session".into())
-        .spawn(move || session(&ctx));
+        .spawn(move || {
+            session(&ctx);
+            let _ = finished_tx.send(());
+        });
     if let Err(e) = spawned {
         fail(&status, format!("cannot start the Miracast thread: {e}"));
+        *phase.lock_ok() = Phase::Failed(crate::miracast_flow::Issue::Other(e.to_string()));
     }
-    ViewerHandle {
-        status,
-        frames,
-        stop,
-        done,
-    }
+    (
+        ViewerHandle {
+            status,
+            frames,
+            stop,
+            done,
+        },
+        MiracastSession { phase, finished },
+    )
 }
 
 fn fail(status: &Mutex<ViewerStatus>, text: String) {
@@ -140,74 +169,86 @@ fn fail(status: &Mutex<ViewerStatus>, text: String) {
     s.error = Some(text);
 }
 
-fn note(status: &Mutex<ViewerStatus>, text: impl Into<String>) {
-    let text = text.into();
-    tracing::info!("miracast: {text}");
-    status.lock_ok().note = Some(text);
-}
-
-/// NM flow: discovery, group join (the user taps this laptop in the tablet's Cast list), then
-/// the stream to the group owner; the group is left at the end.
+/// NM flow: discovery, group join (the user taps this laptop on the Android device), then the
+/// stream to the group owner. Cancel (`stop`) works in every step; the group is always left and
+/// our volatile NM profile removed before the final phase is published, so a new attempt
+/// cannot race with the old cleanup.
 #[cfg(target_os = "linux")]
 fn session_nm(runtime: &tokio::runtime::Handle, ctx: &Ctx) {
     use miracast_loopback::nm_flow::{join_source, FlowOptions};
     use miracast_nm::zbus_backend::ZbusNm;
     use miracast_nm::{NmP2pProvider, Sink, SinkConfig};
 
-    note(
-        &ctx.status,
-        "Looking for a Miracast source: on the tablet open Settings > Cast and enable \
-         wireless display",
-    );
     let api = match runtime.block_on(ZbusNm::connect_system()) {
         Ok(a) => a,
-        Err(e) => return fail(&ctx.status, e.to_string()),
+        Err(e) => return ctx.set_phase(|p| p.on_join_error(&e)),
     };
     let sink = Sink::new(NmP2pProvider::new(api), SinkConfig::default());
     let flow = FlowOptions {
         peer_name: ctx.peer.clone(),
         ..FlowOptions::default()
     };
-    let joined = runtime.block_on(join_source(&sink, &flow, &mut |e| {
-        note(&ctx.status, e.to_string())
-    }));
-    match joined {
-        Ok(j) if !ctx.stop.load(Ordering::Acquire) => {
-            note(
-                &ctx.status,
-                format!(
-                    "Joined {} on {}; starting the stream",
-                    j.peer.name, j.group.interface
-                ),
-            );
-            ctx.stream(j.rtsp, Some(j.group.interface));
+    let mut on_flow = |e: miracast_loopback::nm_flow::FlowEvent| {
+        tracing::info!("miracast: {e}");
+        ctx.set_phase(|p| p.on_flow(&e));
+    };
+    let joined = runtime.block_on(async {
+        tokio::select! {
+            r = join_source(&sink, &flow, &mut on_flow) => Some(r),
+            () = wait_for(&ctx.stop) => None,
         }
-        Ok(_) => {}
-        Err(e) => fail(&ctx.status, e.to_string()),
-    }
+    });
+    let end = match joined {
+        Some(Ok(j)) if !ctx.stop.load(Ordering::Acquire) => {
+            let (report, cancelled) = ctx.stream(j.rtsp, Some(j.group.interface));
+            Some(Phase::Streaming { warning: None }.on_end(&report, cancelled))
+        }
+        Some(Err(e)) => Some(ctx.phase.lock_ok().on_join_error(&e)),
+        // Cancelled while joining (also right after the join finished).
+        _ => Some(Phase::Ended { by_source: false }),
+    };
     if let Err(e) = runtime.block_on(sink.stop()) {
         tracing::warn!("miracast: leaving the Wi-Fi Direct group failed: {e}");
+    }
+    if let Some(end) = end {
+        tracing::info!("miracast: flow ended: {end:?}");
+        ctx.set_phase(|_| end);
+    }
+}
+
+/// Resolves once `flag` is set (polled; the flag is a plain atomic shared with the GUI).
+async fn wait_for(flag: &AtomicBool) {
+    while !flag.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 fn session_nm(_runtime: &tokio::runtime::Handle, ctx: &Ctx) {
-    fail(
-        &ctx.status,
-        "Miracast needs NetworkManager Wi-Fi Direct (Linux only)".into(),
-    );
+    ctx.set_phase(|_| {
+        Phase::Failed(crate::miracast_flow::Issue::NotAvailable(
+            "Miracast needs NetworkManager Wi-Fi Direct (Linux only)".into(),
+        ))
+    });
 }
 
 impl Ctx {
-    /// RTSP + RTP until the session ends; status updates from the driver's log lines.
-    fn stream(&self, source: SocketAddr, interface: Option<String>) {
+    fn set_phase(&self, f: impl FnOnce(&Phase) -> Phase) {
+        let mut p = self.phase.lock_ok();
+        *p = f(&p);
+    }
+
+    /// RTSP + RTP until the session ends; returns the report and whether the user cancelled.
+    fn stream(&self, source: SocketAddr, interface: Option<String>) -> (SinkReport, bool) {
         let udp = match UdpSocket::bind(("0.0.0.0", self.rtp_port)) {
             Ok(u) => u,
             Err(e) => {
-                return fail(
-                    &self.status,
-                    format!("cannot use UDP port {} for the stream: {e}", self.rtp_port),
-                )
+                let reason = format!("cannot use UDP port {} for the stream: {e}", self.rtp_port);
+                let report = SinkReport {
+                    close_reason: Some(reason),
+                    ..SinkReport::default()
+                };
+                return (report, false);
             }
         };
         let want_idr = Arc::new(AtomicBool::new(false));
@@ -220,53 +261,30 @@ impl Ctx {
             ..RunOptions::new(Duration::from_secs(24 * 3600))
         };
         let mut forward = Forward::new(self.units.clone(), want_idr);
-        let status = self.status.clone();
         let report = run_sink_logged(source, udp, &mut forward, &opts, &mut |e| {
-            apply_log_line(&status, &e.to_string())
+            apply_event(&self.status, &e);
+            self.set_phase(|p| p.on_sink(&e));
         });
-        finish(&self.status, &report, self.stop.load(Ordering::Acquire));
+        self.status.lock_ok().connected = false;
+        (report, self.stop.load(Ordering::Acquire))
     }
 }
 
-/// Maps the sink driver's trace lines onto the GUI status (AGENTS.md 1.8: failures show in
-/// the window). RTSP message dumps stay in the log only.
-fn apply_log_line(status: &Mutex<ViewerStatus>, line: &str) {
-    if line.starts_with("<<< ") || line.starts_with(">>> ") {
-        tracing::debug!("miracast: {line}");
+/// Mirrors the sink driver's events into the viewer status (HUD) and the log. RTSP message
+/// dumps go to the debug log only.
+fn apply_event(status: &Mutex<ViewerStatus>, e: &SinkEvent) {
+    if matches!(e, SinkEvent::Rtsp { .. }) {
+        tracing::debug!("miracast: {e}");
         return;
     }
-    tracing::info!("miracast: {line}");
+    tracing::info!("miracast: {e}");
     let mut s = status.lock_ok();
-    if line.starts_with("start media") {
-        s.connected = true;
-        s.note = None;
-    } else if let Some(d) = line.strip_prefix("diagnostic: ") {
-        if s.first_frame {
-            s.last_second = d.to_owned();
-        } else {
-            // Shown in red on the connecting screen (with the firewall-command copy button).
-            s.error = Some(d.to_owned());
-        }
-    } else if line.starts_with("stats: ") {
-        line.clone_into(&mut s.bottleneck);
-    } else if !s.connected {
-        s.note = Some(line.to_owned());
-    }
-}
-
-fn finish(status: &Mutex<ViewerStatus>, report: &SinkReport, stopped: bool) {
-    let mut s = status.lock_ok();
-    s.connected = false;
-    if !stopped && s.error.is_none() {
-        let reason = report.close_reason.as_deref().unwrap_or("the stream ended");
-        s.error = Some(if report.link_lost {
-            format!(
-                "Miracast: {reason}. The Wi-Fi Direct link was lost (see the log for the \
-                 laptop's Wi-Fi channel)"
-            )
-        } else {
-            format!("Miracast: {reason}")
-        });
+    match e {
+        SinkEvent::MediaStarted { .. } => s.connected = true,
+        SinkEvent::NoRtp(d) => s.last_second = d.to_string(),
+        SinkEvent::Stalled(d) => s.last_second = d.to_string(),
+        SinkEvent::Stats(line) => line.clone_into(&mut s.bottleneck),
+        _ => {}
     }
 }
 
@@ -417,7 +435,6 @@ fn decode_loop(
             );
             let mut s = status.lock_ok();
             s.first_frame = true;
-            s.note = None;
         }
         let display = DisplayFrame {
             width,
@@ -509,49 +526,31 @@ mod tests {
     }
 
     #[test]
-    fn log_lines_drive_the_gui_status() {
+    fn sink_events_drive_the_hud_status() {
         let s = Mutex::new(ViewerStatus::default());
-        apply_log_line(&s, "RTSP connected to 192.168.49.1:7236");
-        assert_eq!(
-            s.lock_ok().note.as_deref(),
-            Some("RTSP connected to 192.168.49.1:7236")
-        );
-        apply_log_line(&s, ">>> sink\nOPTIONS * RTSP/1.0");
-        apply_log_line(&s, "start media on UDP 19000");
-        assert!(s.lock_ok().connected);
-        assert!(s.lock_ok().note.is_none());
-        apply_log_line(
+        apply_event(
             &s,
-            "diagnostic: No video arrived; firewall-cmd --add-port=19000/udp",
+            &SinkEvent::Rtsp {
+                outgoing: true,
+                text: "OPTIONS * RTSP/1.0".into(),
+            },
         );
-        assert!(s
-            .lock_ok()
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("firewall-cmd"));
-        apply_log_line(&s, "stats: 5s packets 10 lost 0 (0.00%)");
+        assert!(!s.lock_ok().connected);
+        apply_event(&s, &SinkEvent::MediaStarted { rtp_port: 19000 });
+        assert!(s.lock_ok().connected);
+        apply_event(
+            &s,
+            &SinkEvent::Stats("stats: 5s packets 10 lost 0 (0.00%)".into()),
+        );
         assert!(s.lock_ok().bottleneck.starts_with("stats: 5s"));
-    }
-
-    #[test]
-    fn a_lost_link_is_a_readable_error_and_a_user_stop_is_none() {
-        let s = Mutex::new(ViewerStatus::default());
-        let report = SinkReport {
-            close_reason: Some("link lost".into()),
-            link_lost: true,
-            ..SinkReport::default()
-        };
-        finish(&s, &report, false);
-        assert!(s
-            .lock_ok()
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("Wi-Fi Direct link"));
-        let s = Mutex::new(ViewerStatus::default());
-        finish(&s, &report, true);
-        assert!(s.lock_ok().error.is_none());
+        apply_event(
+            &s,
+            &SinkEvent::Stalled(miracast_rtp::diag::RtpStalled {
+                rtp_port: 19000,
+                silent_for: Duration::from_secs(5),
+            }),
+        );
+        assert!(s.lock_ok().last_second.contains("Video stopped"));
     }
 
     /// End to end on localhost: real H.264 from the FilmCraft encoder -> RTP/TS from the loopback
@@ -598,7 +597,7 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
-        let handle = spawn_direct(
+        let (handle, session) = spawn_direct(
             listener.addr(),
             MiracastOptions {
                 hwdec: false,
@@ -627,9 +626,19 @@ mod tests {
             "sized from the SPS"
         );
         assert!(s.connected && s.first_frame);
+        assert_eq!(session.phase(), Phase::Streaming { warning: None });
+        assert_eq!(
+            crate::miracast_flow::view(&session.phase(), "t480s", true),
+            crate::miracast_flow::View::Video
+        );
         handle.stop();
         // A slow (debug-build) decoder may overflow the queue: IDR requests may come first.
         let idr_requests = src.await_teardown();
         assert!(idr_requests <= 6, "{idr_requests}");
+        session
+            .finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the session thread finishes after Cancel");
+        assert_eq!(session.phase(), Phase::Ended { by_source: false });
     }
 }
