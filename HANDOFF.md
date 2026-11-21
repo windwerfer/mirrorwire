@@ -45,9 +45,15 @@ Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink),
   - `124c903` decision D21 (Presenter large, Viewer small, "View your Android device with Miracast"; rejected: Miracast inside the viewer dialog).
   - `d2d761a` typed `SinkEvent` (sink driver) and `FlowEvent` (NM join) instead of log strings.
   - `595f8fe` start screen per D21; `Screen::Miracast` driven by the pure state machine `miracast_flow.rs` (instruction, waiting with Cancel, video, result pages for no device / group failed / source never started / no RTP with port+zone+firewall-cmd / video stopped); cancellable join; NM profile removed on Cancel, Back, Esc and window close (Drop waits up to 5 s).
-  - Not run on the owner's desktop: the container cannot read `journalctl --user` (no journal files), so the required KWin EACCES / "Atomic commit failed" check is impossible here; no GUI was started and no tablet check was done this round.
+  - **Only unit-tested, not hardware-tested:** the start-screen flow (D21) and the guided Miracast screen ran in no GUI and with no tablet. Manager decision 2026-11-21: skip the GUI/tablet check (no GUI start on the owner's desktop; the KWin journal cannot be read from the container, and mounting the host journal is the owner's call).
+
+- Step 12 (release preparation, 2026-11-21):
+  - `50431e2` clean-room audit fix: RTSP test values of unclear origin (`6B8B4567`, `192.168.173.x`, `server_port=15550`) replaced with our run-3 trace values; [verify] comments in code updated.
+  - `6777d3d` decision D22 (naming: button "View your Android device (Miracast-compatible)", Miracast only descriptively, trademark sentence in README, AppStream metainfo and miracast.md; rejected "Wi-Fi Display only"); feature `miracast` default with effect on Linux only (Linux target deps + `cfg(all(feature, target_os = "linux"))`); miracast.md §15 audit report (nothing derived) and [verify] resolution table.
+  - Built here with `--no-default-features --features gui,filmcraft,miracast` (clippy, 11 app tests, release). Default build: manager's box. macOS/Windows with the new default: CI (no cross toolchain here).
 
 ## Decisions
+- D22: Miracast only as a descriptive term; feature `miracast` default on Linux only.
 - Miracast reuses `ViewerHandle` and the app's decoders; it is behind the non-default app feature `miracast`. The flags exist in every build and fail with a clear message without it.
 - Decode queue 6 for Miracast (like Android), with drop-to-keyframe plus an IDR request on overflow.
 - Do not try to steer the P2P channel; log the STA channel and rely on the source picking its STA channel (same AP, same band as the laptop works).
@@ -59,6 +65,8 @@ Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink),
 - See also miracast.md section 7 (sink first, sans-IO parsers, no HDCP/UIBC, audio demuxed not played, rejected: root helpers, direct wpa_supplicant D-Bus, GStreamer/FFmpeg demux, GPL code).
 
 ## Open questions
+- Flatpak: the Miracast-compatible button needs `--system-talk-name=org.freedesktop.NetworkManager` to work in the Flatpak; adding it is an owner decision (AGENTS.md 1.2, section 5). Until then it shows "not available" there; native builds work.
+- Remaining [verify] items (miracast.md §15): WFD level bits, other CEA bits, LPCM sample-rate bit, `bind-activation`. None affects the working path.
 - KWin check: `journalctl --user -b` is not readable from the research container (no journal files, `/var/log/journal` empty). Either run the GUI checks where the journal is readable or mount the journal read-only; until then no GUI starts on the owner's desktop.
 - The previous viewer runs (6a-6e, wgpu window) happened before the KWin rule; whether they caused the KWin DRM loss is unknown from here.
 - Laptop screenshot of the viewer: the xdg Screenshot portal request at 13:17:58 had an unknown outcome (no Response, request gone); not retried, so no dialog piles up on the owner's screen. Ask the owner for a photo/screenshot, or allow a portal screenshot.
@@ -140,4 +148,4 @@ ffprobe -hide_banner stream.h264
 **What a good result looks like:** `sink-trace.log` shows M1..M7 in order, "start media on UDP 19000", rising video AU counts, no `close:` until you disconnect. Also useful: which `wfd_video_formats`/`wfd_audio_codecs` the tablet's M4 picked, and whether it rejected `wfd_audio_codecs: none` (then an LPCM offer is needed: miracast.md section 5).
 
 ## Commit
-Step 7: 468a665, 1e2651f, ecad42c, d3d2899, 1d3873a, 91987c4. Step 8: e4309af, 651f0f6, 658cb8c, df3ab68. Step 9: 1942535, 6ad2e1c, e66a624, 96c0e13, 8ab16e0, 03258f8, 877a2b9. Step 10: a4f80f8, 38f6d43, 90929b0, e5f3426, 194d4fc, bccd794, 97e5b74, 953735e, 7050dd9. Step 11: 124c903, d2d761a, 595f8fe, plus this docs commit (see `git log -1`). Not pushed (container has no GitHub access).
+Step 7: 468a665, 1e2651f, ecad42c, d3d2899, 1d3873a, 91987c4. Step 8: e4309af, 651f0f6, 658cb8c, df3ab68. Step 9: 1942535, 6ad2e1c, e66a624, 96c0e13, 8ab16e0, 03258f8, 877a2b9. Step 10: a4f80f8, 38f6d43, 90929b0, e5f3426, 194d4fc, bccd794, 97e5b74, 953735e, 7050dd9. Step 11: 124c903, d2d761a, 595f8fe, 81082c2. Step 12: 50431e2, 6777d3d, plus this docs commit (see `git log -1`). Not pushed (container has no GitHub access).
