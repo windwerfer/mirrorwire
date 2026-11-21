@@ -16,6 +16,6 @@ workspace = true
 anyhow.workspace = true
 # FilmCraft's pure-Rust H.264 decoder (MIT OR Apache-2.0, no unsafe): the software decoder
 # (decision log 2026-11-15). Not on crates.io; pinned to a reviewed commit (deny.toml allows
-# this git source). Keep the same craft-libs commit that filmcraft-h264enc in
-# mirrorwire-media pulls, or the workspace builds two copies of craft-libs.
-craft-video = { git = "https://github.com/storytold/craft-libs", rev = "09dcbc225b95232998498a40ca56e24716571d53", default-features = false, features = ["h264-decode"] }
+# this git source). mirrorwire-media pins the encoder (`h264-encode`) to the same rev; bump
+# both together, or the workspace builds two copies of craft-libs.
+craft-video = { git = "https://github.com/storytold/craft-libs", rev = "068e079c7be4b100a8a6b305b31ac881e069727e", default-features = false, features = ["h264-decode"] }
