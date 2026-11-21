@@ -331,7 +331,11 @@ target), **planned**, **idea**. Update this file when an item moves.
 - **GitHub Releases** for stable download links (release job exists for `v*` tags, never run;
   the owner decides when to tag).
 - Flathub (vendored cargo sources), notarized Mac builds (needs a paid Apple account).
-- Miracast sink as a second `VideoSink`. See also the parked "Miracast support" entry below.
+- Miracast sink in the viewer: **built** (spike, 2026-11-21, app feature `miracast`,
+  `mirrorwire view --miracast`): a Miracast source arrives as a second producer of the
+  viewer's `ViewerHandle`; hardware run 6 showed the TB336FU at ~30 fps 1080p through
+  FilmCraft. Open: default build (VAAPI) on the owner's box, a home-screen entry, a cancellable
+  NM join. See also the "Miracast support" entry below and [miracast.md](miracast.md) §13.
 - **Miracast support (Wi-Fi Display, optional MS-MICE)** — status: idea/parked, owner decides.
   Goal: an Android tablet/phone mirrors to the Linux laptop via Miracast (tablet = source,
   laptop = sink), optionally the reverse, as a clean reusable Rust crate.

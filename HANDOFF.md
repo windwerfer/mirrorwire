@@ -34,7 +34,16 @@ Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink),
   - `6ad2e1c` IDR requests rate-limited (1/s); `e66a624` time-bounded jitter buffer (40 ms) + RxStats; `96c0e13` close on silence (link lost), stats lines, no panic on a dead TCP write; `8ab16e0` demo `--reconnect N`, STA channel logged around each session; `03258f8` TEARDOWN at the deadline (found in run 5).
   - Run 5 result: 5/5 attempts streamed at least 5 min (306-406 s), 0 link losses, loss 0.00-0.43 %, groups on 2462 MHz = STA 2462 MHz every time. Group formation failed once in 2 attempts and the retry fixed it. The table is in miracast.md.
 
+- Step 10 (viewer integration, hardware run 6, 2026-11-21, `~/tmp/mc-hw/*run6*`):
+  - `a4f80f8` roadmap TODO: optional root prompt for the channel (idea/optional), noted in miracast.md section 12.
+  - `38f6d43` sink driver usable from the app (stop flag, no unwraps); `90929b0` TestSource::datagrams_for.
+  - `e5f3426` `mirrorwire view --miracast [--miracast-peer NAME]` (app feature `miracast`, module `mirrorwire-app/src/miracast.rs`): NM join -> RTSP/RTP -> the app's `open_decoder`, sized from the SPS, into the existing `ViewerHandle`/video view; `ViewerStatus::note` for progress.
+  - Fixes from the hardware runs: `194d4fc` bounded RTSP connect (`connect_within`, "the source did not start the stream"), `bccd794` decode log lines, `97e5b74` IDR request on queue overflow, `953735e` decode queue 6.
+  - Result (run 6e): TB336FU 1080p shown at ~30 fps (1995 pictures/71 s), decode 10-12 ms (FilmCraft, wgpu), loss 0.12 %, clean TEARDOWN. No laptop screenshot (see open questions).
+
 ## Decisions
+- Miracast reuses `ViewerHandle` and the app's decoders; it is behind the non-default app feature `miracast`. The flags exist in every build and fail with a clear message without it.
+- Decode queue 6 for Miracast (like Android), with drop-to-keyframe plus an IDR request on overflow.
 - Do not try to steer the P2P channel; log the STA channel and rely on the source picking its STA channel (same AP, same band as the laptop works).
 - Retry only `P2pError::Backend` (formation) failures; permission/availability/peer errors stop at once.
 - ipv4.method `auto` (tablet is GO and serves DHCP), `persist: volatile`; no `bind-activation` yet (untried on hardware).
@@ -44,6 +53,9 @@ Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink),
 - See also miracast.md section 7 (sink first, sans-IO parsers, no HDCP/UIBC, audio demuxed not played, rejected: root helpers, direct wpa_supplicant D-Bus, GStreamer/FFmpeg demux, GPL code).
 
 ## Open questions
+- Laptop screenshot of the viewer: the xdg Screenshot portal request at 13:17:58 had an unknown outcome (no Response, request gone); not retried, so no dialog piles up on the owner's screen. Ask the owner for a photo/screenshot, or allow a portal screenshot.
+- Default app build (`portal` + `ffmpeg`) cannot link in this container (no libpipewire, no FFmpeg dev libs). Miracast was built and tested with `--no-default-features --features gui,filmcraft,miracast`. The default build with `--features miracast` (VAAPI decode) is untested: run it on the manager's box or after installing the dev packages.
+- `presenter::tests::test_source_streams_to_an_in_process_viewer` fails in the FFmpeg-less build (needs x264); unrelated to Miracast.
 - Confirm against the official nm-settings-dbus / wpa_supplicant D-Bus pages that `wifi-p2p` has no GO intent or frequency property (the box could not fetch them).
 - When the laptop STA is on 5 GHz (run 4: 5300 MHz DFS) and the tablet on 2.4 GHz, a link loss is likely; the GUI could warn when the STA is on 5 GHz. Not measured beyond run 4's one loss.
 - `--reconnect` has unit/e2e coverage only; no link loss happened in run 5 to exercise it.
@@ -60,7 +72,7 @@ Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink),
 `git log --oneline 767ed3c..miracast-spike`; `cargo test -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback` (94 tests); `cargo clippy -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback --all-targets -- -D warnings`; `cargo fmt --all --check`; `cargo xtask layers`. `cargo xtask ci` cannot build in the research container (no libpipewire-0.3 dev package), unrelated to the spike.
 
 ## Next step
-Feed access units to MirrorWire's decoder sized from `h264::find_sps` (a viewer path for Miracast), and show `NoRtp`/`RtpStalled`/`P2pError` in the GUI. Optionally `bind-activation: dbus-client` so a killed sink leaves no group (Ctrl-C today leaves the volatile profile active until NM drops it).
+Build the default app with `--features miracast` on a box with libpipewire and FFmpeg (VAAPI decode) and repeat run 6; then a home-screen entry ("Receive Miracast") and a cancellable NM join. Optionally `bind-activation: dbus-client` so a killed sink leaves no group (Ctrl-C today leaves the volatile profile active until NM drops it).
 
 ## HARDWARE RUN 5 (done 2026-11-21; driver script `~/tmp/mc-hw/driver-run5.sh`)
 `./target/release/miracast-sink-demo --nm --out stream.h264 --secs 300 2> sink-trace.log`; on the tablet: Settings -> Cast -> Enable wireless display, cancel the "wants to connect" prompt, tap "Wireless display". Watch for `attempt n/3 failed` (retry) and `diagnostic:` lines.
@@ -120,4 +132,4 @@ ffprobe -hide_banner stream.h264
 **What a good result looks like:** `sink-trace.log` shows M1..M7 in order, "start media on UDP 19000", rising video AU counts, no `close:` until you disconnect. Also useful: which `wfd_video_formats`/`wfd_audio_codecs` the tablet's M4 picked, and whether it rejected `wfd_audio_codecs: none` (then an LPCM offer is needed: miracast.md section 5).
 
 ## Commit
-Step 7: 468a665, 1e2651f, ecad42c, d3d2899, 1d3873a, 91987c4. Step 8: e4309af, 651f0f6, 658cb8c, df3ab68. Step 9: 1942535, 6ad2e1c, e66a624, 96c0e13, 8ab16e0, 03258f8, plus this docs commit (see `git log -1`). Not pushed (container has no GitHub access).
+Step 7: 468a665, 1e2651f, ecad42c, d3d2899, 1d3873a, 91987c4. Step 8: e4309af, 651f0f6, 658cb8c, df3ab68. Step 9: 1942535, 6ad2e1c, e66a624, 96c0e13, 8ab16e0, 03258f8, 877a2b9. Step 10: a4f80f8, 38f6d43, 90929b0, e5f3426, 194d4fc, bccd794, 97e5b74, 953735e, plus this docs commit (see `git log -1`). Not pushed (container has no GitHub access).

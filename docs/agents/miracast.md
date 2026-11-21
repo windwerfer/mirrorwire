@@ -546,3 +546,28 @@ the flags exist in every build and say so when the feature is missing).
   gui,filmcraft,miracast` builds without both (FilmCraft decoder). Tests: 5 in
   `miracast::tests`, including real FilmCraft H.264 -> `TestSource` RTP/TS on localhost ->
   this module -> a 320x240 picture with the SPS size.
+
+### Hardware run 6: Miracast in the viewer (2026-11-21, logs `~/tmp/mc-hw/*run6*`)
+
+T480s (STA 2462 MHz), TB336FU, `mirrorwire view --miracast` built here with
+`--no-default-features --features gui,filmcraft,miracast` (FilmCraft software decode, wgpu
+window on the KDE Wayland session; no FFmpeg, so no VAAPI). Taps on the tablet through adb.
+
+| run | build change | result |
+|---|---|---|
+| 6a | first build | group formed after the tablet's prompt was answered without the Cast-list tap: no RTSP server, the viewer retried forever -> fixed (`connect_within` 20 s, readable reason) |
+| 6b | | media 72 s, 0.10 % loss, clean TEARDOWN; the log had no proof of decoded pictures -> first-picture and per-second decode lines |
+| 6c | logs | first picture 1920x1080 0.3 s after PLAY, but ~0.7 pictures/s |
+| 6d | IDR request on queue overflow | ~1.7 pictures/s (19 IDR requests) |
+| 6e | decode queue 2 -> 6 | **~30 pictures/s** (1995 in 71 s), decode 10-12 ms, loss 0.12 %, 6 IDR requests, clean TEARDOWN |
+
+Cause of 6c/6d: an IDR picture decodes several times slower than a P picture; with a 2-deep
+queue every IDR overflowed it and the drop-to-keyframe rule fed the next IDR. Offline, on
+`stream-run5-5.h264`: FilmCraft 8.4 ms per unit + RGBA conversion 13.7 ms per 1080p picture.
+
+Not done: a screenshot of the laptop screen. The only rootless way is the xdg Screenshot
+portal; one non-interactive request (13:17:58) got no Response within 15 s and its request
+object was gone afterwards, outcome unknown; not retried, to avoid a dialog on the owner's
+screen. Evidence is the viewer log (first picture, per-second picture counts) and the
+tablet screenshots `t27`-`t30` (casting). Group formation needed the automatic retry in 3 of
+5 runs.
