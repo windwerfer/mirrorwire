@@ -24,7 +24,7 @@ use std::time::Instant;
 /// the pipeline leaves the encoder alone when the adaptive bitrate moves its cap
 /// (`pipeline::maybe_replace_encoder`, `quality_mode`). Only a change of the user's own
 /// setting applies. FEC and pacing still follow the link.
-#[cfg(feature = "miracast")]
+#[cfg(all(feature = "miracast", target_os = "linux"))]
 mod miracast;
 mod present;
 mod scan;
@@ -69,19 +69,22 @@ impl ResolvedRenderer {
     }
 }
 
+/// The start-screen button text (decision D22: "Miracast" only descriptively).
+pub(crate) const MIRACAST_BUTTON: &str = "View your Android device (Miracast-compatible)";
+
 enum Screen {
     Home,
     Present,
     View,
-    /// "View your Android device with Miracast" (D21; only reachable with feature `miracast`).
-    #[cfg_attr(not(feature = "miracast"), allow(dead_code))]
+    /// "View your Android device (Miracast-compatible)" (D21, D22; feature `miracast`).
+    #[cfg_attr(not(all(feature = "miracast", target_os = "linux")), allow(dead_code))]
     Miracast,
 }
 
 /// The running Miracast flow next to `watching` (feature `miracast`; `()` without it).
-#[cfg(feature = "miracast")]
+#[cfg(all(feature = "miracast", target_os = "linux"))]
 type MiracastState = crate::miracast::MiracastSession;
-#[cfg(not(feature = "miracast"))]
+#[cfg(not(all(feature = "miracast", target_os = "linux")))]
 type MiracastState = ();
 
 pub fn run(
@@ -281,7 +284,7 @@ struct MirrorApp {
     miracast: Option<Option<String>>,
     /// The last Miracast flow; kept after Cancel so closing the window can wait for its NM
     /// cleanup.
-    #[cfg_attr(not(feature = "miracast"), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "miracast", target_os = "linux")), allow(dead_code))]
     miracast_session: Option<MiracastState>,
 }
 
@@ -321,7 +324,7 @@ impl MirrorApp {
 
     /// The Miracast button (D21) and `view --miracast`: starts discovery at once, so this
     /// computer is visible and waiting before the user taps it on the Android device.
-    #[cfg(feature = "miracast")]
+    #[cfg(all(feature = "miracast", target_os = "linux"))]
     fn connect_miracast(&mut self, ctx: &egui::Context, peer: Option<String>) {
         let repaint = ctx.clone();
         self.disconnect(ctx);
@@ -350,7 +353,7 @@ impl MirrorApp {
 
     /// A previous flow must have left its Wi-Fi Direct group before a new one starts or the
     /// app exits (its `stop_find`/deactivate would hit the new one, or the profile would stay).
-    #[cfg(feature = "miracast")]
+    #[cfg(all(feature = "miracast", target_os = "linux"))]
     fn wait_for_miracast_cleanup(&mut self) {
         if let Some(old) = self.miracast_session.take() {
             if let Some(h) = self.watching.take() {
@@ -363,15 +366,15 @@ impl MirrorApp {
         }
     }
 
-    #[cfg(not(feature = "miracast"))]
+    #[cfg(not(all(feature = "miracast", target_os = "linux")))]
     fn connect_miracast(&mut self, _ctx: &egui::Context, _peer: Option<String>) {
-        self.error = Some("this build has no Miracast support (cargo feature `miracast`)".into());
+        self.error = Some("this build cannot receive Miracast-compatible streams (cargo feature `miracast`, Linux)".into());
     }
 
-    #[cfg(not(feature = "miracast"))]
+    #[cfg(not(all(feature = "miracast", target_os = "linux")))]
     fn wait_for_miracast_cleanup(&mut self) {}
 
-    #[cfg(not(feature = "miracast"))]
+    #[cfg(not(all(feature = "miracast", target_os = "linux")))]
     fn miracast_ui(&mut self, ui: &mut egui::Ui) {
         self.go_home(ui.ctx());
     }
@@ -454,13 +457,10 @@ impl MirrorApp {
                 self.error = None;
                 self.screen = Screen::View;
             }
-            if cfg!(feature = "miracast") {
+            if cfg!(all(feature = "miracast", target_os = "linux")) {
                 ui.add_space(12.0);
                 if ui
-                    .add(
-                        egui::Button::new("View your Android device with Miracast")
-                            .min_size(egui::vec2(320.0, 32.0)),
-                    )
+                    .add(egui::Button::new(MIRACAST_BUTTON).min_size(egui::vec2(320.0, 32.0)))
                     .clicked()
                 {
                     self.connect_miracast(ui.ctx(), None);

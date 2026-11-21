@@ -134,7 +134,7 @@ fn start(
                     Ok((totals, stats)) => {
                         let _ = done_tx.send((totals, stats, started.elapsed().as_secs_f64()));
                     }
-                    Err(e) => fail(&status, format!("Miracast decoder: {e:#}")),
+                    Err(e) => fail(&status, format!("decoder for the Android stream: {e:#}")),
                 }
             });
         if let Err(e) = spawned {
@@ -148,7 +148,10 @@ fn start(
             let _ = finished_tx.send(());
         });
     if let Err(e) = spawned {
-        fail(&status, format!("cannot start the Miracast thread: {e}"));
+        fail(
+            &status,
+            format!("cannot start the receiver for the Android device: {e}"),
+        );
         *phase.lock_ok() = Phase::Failed(crate::miracast_flow::Issue::Other(e.to_string()));
     }
     (
@@ -173,7 +176,6 @@ fn fail(status: &Mutex<ViewerStatus>, text: String) {
 /// stream to the group owner. Cancel (`stop`) works in every step; the group is always left and
 /// our volatile NM profile removed before the final phase is published, so a new attempt
 /// cannot race with the old cleanup.
-#[cfg(target_os = "linux")]
 fn session_nm(runtime: &tokio::runtime::Handle, ctx: &Ctx) {
     use miracast_loopback::nm_flow::{join_source, FlowOptions};
     use miracast_nm::zbus_backend::ZbusNm;
@@ -221,15 +223,6 @@ async fn wait_for(flag: &AtomicBool) {
     while !flag.load(Ordering::Acquire) {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn session_nm(_runtime: &tokio::runtime::Handle, ctx: &Ctx) {
-    ctx.set_phase(|_| {
-        Phase::Failed(crate::miracast_flow::Issue::NotAvailable(
-            "Miracast needs NetworkManager Wi-Fi Direct (Linux only)".into(),
-        ))
-    });
 }
 
 impl Ctx {
@@ -462,7 +455,7 @@ fn decode_loop(
                 .map(|(_, v)| v.mean)
                 .unwrap_or(0.0);
             s.last_second = format!(
-                "Miracast {:.1} fps, {:.2} Mbit/s, decode {:.2} ms, {} pictures",
+                "Android stream {:.1} fps, {:.2} Mbit/s, decode {:.2} ms, {} pictures",
                 s.source_fps, s.bitrate_mbps, s.decode_ms, totals.frames
             );
             tracing::info!("miracast: {}", s.last_second);

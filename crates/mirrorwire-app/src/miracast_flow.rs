@@ -1,4 +1,4 @@
-//! The "View your Android device with Miracast" flow as a pure state machine (decision D21,
+//! The "View your Android device (Miracast-compatible)" flow as a pure state machine (decisions D21, D22,
 //! feature `miracast`). The session thread feeds it the typed events of the Wi-Fi Direct join
 //! ([`FlowEvent`]) and of the RTSP/RTP sink ([`SinkEvent`]); the GUI asks [`view`] what to show.
 //! No egui here, so every state and message is unit-tested.
@@ -191,14 +191,14 @@ pub fn view(phase: &Phase, device: &str, has_picture: bool) -> View {
         },
         Phase::Ended { by_source: false } => View::Done {
             title: "Stopped".into(),
-            body: "Miracast was stopped.".into(),
+            body: "Receiving from your Android device was stopped.".into(),
         },
     }
 }
 
 fn title(issue: &Issue) -> &'static str {
     match issue {
-        Issue::NotAvailable(_) => "Miracast is not available",
+        Issue::NotAvailable(_) => "Receiving from Android is not available",
         Issue::NoSource => "No Android device found",
         Issue::GroupFailed(_) => "The connection could not be set up",
         Issue::SourceNeverStarted => "Your Android device did not start casting",

@@ -11,6 +11,10 @@
       milliseconds of delay. Screen capture goes through the desktop portal, video is
       hardware-encoded H.264, and the stream travels over encrypted QUIC.
     </p>
+    <p>
+      It can also show the screen of an Android device that casts with "Wireless display".
+      Supports the Miracast™ protocol (not Wi-Fi Alliance certified). Miracast is a trademark of Wi-Fi Alliance.
+    </p>
   </description>
   <launchable type="desktop-id">io.github.windwerfer.MirrorWire.desktop</launchable>
   <url type="homepage">https://github.com/windwerfer/mirrorwire</url>

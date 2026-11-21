@@ -1,5 +1,7 @@
 # Miracast sink spike (branch `miracast-spike`)
 
+Supports the Miracast™ protocol (not Wi-Fi Alliance certified). Miracast is a trademark of Wi-Fi Alliance. Naming rules: decision D22 (descriptive use only, never as a product name, no logo, no "certified").
+
 Status: **research only (step 1 of 6)**. Nothing here is implemented or hardware-tested.
 Everything below is written from the specs and general knowledge, clean-room (no MiracleCast,
 gnome-network-displays or other GPL code was read). Items marked **[verify]** are unconfirmed
@@ -574,8 +576,8 @@ tablet screenshots `t27`-`t30` (casting). Group formation needed the automatic r
 
 ## 14. Start screen flow (D21, 2026-11-21)
 
-Start screen: large "Presenter", small "Viewer", "View your Android device with Miracast"
-(feature `miracast` only), "Advanced" (UDP port) collapsed. The Miracast button opens
+Start screen: large "Presenter", small "Viewer", "View your Android device
+(Miracast-compatible)" (label per D22; feature `miracast`, default and effective on Linux only), "Advanced" (UDP port) collapsed. The Miracast button opens
 `Screen::Miracast` (`gui/miracast.rs`), driven by the pure state machine
 `mirrorwire-app/src/miracast_flow.rs`:
 
@@ -597,3 +599,44 @@ wait (up to 5 s) for `MiracastSession::finished`. Tests: 7 state-machine tests, 
 localhost end-to-end test now also checks Video and Ended after Cancel. Not run on the
 desktop this round: the container cannot read the user journal for the required KWin check,
 so no GUI was started on the owner's machine.
+
+## 15. Clean-room audit and [verify] resolution (step 10, 2026-11-21)
+
+Method: provenance review of each file (who wrote it, from which public source or our own
+trace), a search for literals that do not come from the spec grammar or our hardware traces,
+and a check for copyright headers, foreign identifiers or comments pointing at other
+projects. No GPL code (MiracleCast, gnome-network-displays, ...) was read for this or any
+earlier step, so no side-by-side comparison was made (D20).
+
+| scope | origin | result |
+|---|---|---|
+| `crates/miracast-loopback/src/lib.rs` (sink driver, `TestSource`, `SinkEvent`) | written in steps 6-11 of this branch from RFC 2326 framing, the WFD M1-M7 order as documented in §3, and our own hardware traces | own work. Test literals `6B8B4567` (session id), `192.168.173.x` (presentation URL) and `server_port=15550` had no documented source (not code, but of unclear origin): **replaced** with values from our run-3 trace (session `448846178`, `192.168.49.1`, `server_port=7016`), also in `miracast-rtsp` `session.rs`/`params.rs` tests (commit 50431e2) |
+| `crates/miracast-loopback/src/nm_flow.rs` | written in steps 8-11 on our `P2pProvider` API and the R1/R2 findings (§11) | own work |
+| `crates/miracast-loopback/tests/e2e.rs` | written in steps 6-11 against our own `TestSource` | own work; RTSP bodies follow the spec grammar of §3 (`wfd_video_formats` field order, `wfd_client_rtp_ports`, `wfd_trigger_method`) |
+| `crates/miracast-loopback/src/bin/miracast-sink-demo.rs` | written in steps 6-9 (CLI, stats, `--nm` loop) | own work |
+| `crates/miracast-rtsp/src/message.rs` from line 200 (`parse_message`, tests) | written in step 4 from RFC 2326 section 4 (request/status line, headers, `Content-Length` body) | generic framing parser in idiomatic Rust, bounded per AGENTS.md 1.9; tests use spec strings (`org.wfa.wfd1.0`, `wfd_trigger_method: SETUP`) only. Nothing distinctive |
+
+Result: **nothing looks derived**; the only finding (test values of unclear origin) is fixed.
+
+[verify] items, resolved only against our hardware traces (`~/tmp/mc-hw`, runs 1-6) or left
+open (the Wi-Fi Display spec text is not available on the research box):
+
+| item | status | evidence |
+|---|---|---|
+| WFD IE device info: type bits 1:0, session availability bits 5:4 | **confirmed** | tablet IE `00 0006 0010 1c44 0032` = source, available, port 7236; tablet logcat `WFD DeviceInfo: 17` for our `0x0011` and listed us as a sink |
+| other device-info bits (HDCP, time sync, coupled sink, ...) | open, unused | we set them to 0 and the tablet accepted us |
+| CEA bit 7 = 1920x1080p30 | **confirmed** | M4 `02 02 00000080`, SPS 1920x1080, ~30 fps measured |
+| other CEA bits | open | never picked by the tablet |
+| profile bit 1 = CHP | **confirmed** | M4 profile `02`, SPS profile_idc 100 (High) |
+| level bits (0x01 3.1, 0x02 3.2, 0x04 4.1, 0x08 4.2) | open | M4 level `02` with an SPS level 4.0: fits no reading of the table; the decoder is sized from the SPS (step 4), so it does not matter at runtime |
+| audio `LPCM 00000002 00` = 48 kHz 16 bit stereo | partly | the tablet requires audio and picks exactly this offer (runs 1-6); the sample-rate meaning of bit 1 is not checked (audio is not decoded) |
+| Fedora wpa_supplicant built with P2P + WFD | **confirmed** | `p2p-dev-wlp58s0` exists; the tablet received our WFD IE |
+| polkit: no prompt for an active session | **confirmed** | NM `GetPermissions`: `network-control`, `settings.modify.own/system`, `wifi.scan` = yes (baseline); no prompt in runs 1-6 |
+| R1 (incoming negotiation), who is GO, AOSP behaviours of §5 | **settled** | §11: sink must activate first; tablet is GO (intent 14); M1-M7 in order, M16 keepalives, IDR on request, first unit has SPS, rotation without new RTSP, `audio none` refused. Correction to §5: the source is the RTSP server and the sink connects (not the other way round) |
+| Intel 8265 interface combinations (`iw list`) | partly | `iw` was not available; the owner confirmed one shared radio (station + P2P), consistent with run 4 (5300 vs 2462 MHz, link loss) and run 5 (same channel, no loss) |
+| `bind-activation: dbus-client` | open | never tried; the app removes the profile itself on Cancel/close |
+
+Flatpak note: the Flatpak cannot reach NetworkManager's system-bus API without a new
+`--system-talk-name=org.freedesktop.NetworkManager`, which AGENTS.md §1.2 does not allow
+without the owner. Until then the Miracast-compatible button only works in native builds
+(AppImage, distribution package, `cargo build`); in the Flatpak it will show "not available".
