@@ -343,6 +343,7 @@ when the portal only sent 6.8 fps, because PTS advanced by 1/60 s per frame.
 | Flatpak, AppImage, macOS .app / DMG builds | built in CI; Flatpak presenter and Intel DMG viewer start on the real machines |
 | camera QR scanning | Linux desktop viewer: "Scan QR with camera" button (portal + PipeWire); not yet run on a real camera |
 | Android viewer (APK) | built: arm64-v8a, Android 8+, MediaCodec decode (hardware first). First phone test froze after one picture; fixed, emulator-tested, device retest pending |
+| Miracast sink in the viewer (spike) | `mirrorwire view --miracast [--miracast-peer NAME]`, build with `--features miracast` (Linux, NetworkManager Wi-Fi Direct, no root). An Android "Wireless display"/Cast source shows in the normal video view, decoded by the app's decoder at the size from the stream's SPS. Localhost end-to-end test with real H.264 (FilmCraft) passes; the T480s + TB336FU sink path is hardware-tested in the demo binary; details in [docs/agents/miracast.md](docs/agents/miracast.md) |
 | Android presenter | later (MediaProjection) |
 | Browser viewer (WebAssembly) | planned (WebTransport + WebCodecs); details in [docs/agents/roadmap.md](docs/agents/roadmap.md) |
 | Phone/tablet as input device (remote, pointer, drawing, touchpad, pen tablet) | idea, parked until mirroring is solid and a UI sketch arrives; see [docs/agents/roadmap.md](docs/agents/roadmap.md#future-phonetablet-as-input-device) |

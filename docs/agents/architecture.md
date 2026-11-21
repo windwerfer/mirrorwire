@@ -25,6 +25,11 @@ Rules:
 - **`mirrorwire-media` and `mirrorwire-net` never depend on each other.** The presenter pushes
   encoded frames into a `VideoSink`; QUIC is one sink. A Miracast/RTSP sink or a file sink can be
   added beside it without touching the encoder.
+- **Miracast (spike, cargo feature `miracast` of `mirrorwire-app`)** enters the viewer as a
+  second producer of `ViewerHandle` (`mirrorwire-app/src/miracast.rs`): the standalone
+  `miracast-*` crates do Wi-Fi Direct, RTSP and RTP/TS; the app's `VideoDecoder` decodes, sized
+  from the stream's SPS; the GUI's video view is unchanged. No `mirrorwire-*` crate depends on
+  the `miracast-*` crates; only the app, and only with the feature. See [miracast.md](miracast.md).
 - **Only `mirrorwire-app` and `mirrorwire-android` know about egui/eframe** (and only the app
   about clap and tracing-subscriber). Library crates
   log through `tracing` and return `anyhow::Result`.

@@ -18,6 +18,8 @@ gui = ["dep:eframe"]
 portal = ["mirrorwire-media/portal"]
 filmcraft = ["mirrorwire-media/filmcraft"]
 static-ffmpeg = ["mirrorwire-media/static-ffmpeg"]
+# Miracast sink in the viewer (spike, docs/agents/miracast.md): `mirrorwire view --miracast`.
+miracast = ["dep:miracast-loopback", "dep:miracast-nm", "dep:miracast-rtp", "dep:miracast-rtsp"]
 
 [lints]
 workspace = true
@@ -36,3 +38,8 @@ mirrorwire-media = { path = "../mirrorwire-media", default-features = false }
 mirrorwire-net = { path = "../mirrorwire-net" }
 eframe = { version = "0.37", optional = true, default-features = false, features = ["glow", "wgpu", "default_fonts", "wayland", "x11", "clipboard"] }
 dirs = "7"
+# Spike crates of this workspace (no new third-party dependency), only with `miracast`.
+miracast-loopback = { path = "../miracast-loopback", optional = true }
+miracast-nm = { path = "../miracast-nm", optional = true }
+miracast-rtp = { path = "../miracast-rtp", optional = true }
+miracast-rtsp = { path = "../miracast-rtsp", optional = true }

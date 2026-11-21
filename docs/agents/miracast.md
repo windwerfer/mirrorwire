@@ -520,3 +520,28 @@ Run 5 (5 `--nm` attempts, T480s + TB336FU, logs `~/tmp/mc-hw/*run5*`, laptop STA
   (ch 11) before and after every session. Same channel, which fits the run-4 link loss having
   been caused by the 5300/2462 MHz split (run 4: one loss in 4 sessions; run 5: none in 5).
 - No polkit or password prompt appeared; no firewall change (UDP 19000 reachable).
+
+## 13. Viewer integration (step 8, 2026-11-21)
+
+`mirrorwire view --miracast [--miracast-peer NAME]` (app feature `miracast`, not default;
+the flags exist in every build and say so when the feature is missing).
+
+- Module `crates/mirrorwire-app/src/miracast.rs` returns the same `ViewerHandle` as a QUIC
+  viewer, so the GUI's video view, HUD, Back/Esc and renderers work unchanged.
+- Session thread: `ZbusNm` -> `nm_flow::join_source` (progress text in the new
+  `ViewerStatus::note`, shown on the connecting screen instead of the QUIC steps) ->
+  `run_sink_logged` to the group owner (8 s close-on-silence, stats every 5 s, `stop` flag =
+  Back button -> TEARDOWN) -> leave the group. Driver log lines map to the status:
+  `start media` = connected, `diagnostic: ...` = red error before the first picture (the
+  firewall-command copy button applies) or HUD text after it, `stats: ...` = HUD line.
+- Decode thread: access units through a 2-deep channel (full: drop until the next keyframe);
+  the first keyframe's SPS (`h264::find_sps`) opens `decode::open_decoder` and sets the native
+  size; a keyframe with a different SPS size (rotation) reopens it. Units before the first
+  SPS are skipped. Only the newest picture goes to the GUI. Audio is ignored.
+- Not done: the NM join can't be cancelled while it waits (up to 3 x 120 s); Back takes
+  effect when it returns, and the group is left then. No Miracast entry on the home screen
+  (CLI only). No HUD latency (the source has no clock sync with us).
+- Build here: the full app needs libpipewire and FFmpeg; `--no-default-features --features
+  gui,filmcraft,miracast` builds without both (FilmCraft decoder). Tests: 5 in
+  `miracast::tests`, including real FilmCraft H.264 -> `TestSource` RTP/TS on localhost ->
+  this module -> a 320x240 picture with the SPS size.

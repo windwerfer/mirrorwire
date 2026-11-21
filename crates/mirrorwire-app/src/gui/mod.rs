@@ -91,6 +91,7 @@ pub fn run(
     let name = args.name.clone().unwrap_or_else(crate::default_name);
     let config_dir = config_dir.to_path_buf();
     let start_in_view = matches!(launch, GuiLaunch::View);
+    let miracast = args.miracast.then(|| args.miracast_peer.clone());
 
     let preferred = match renderer {
         RendererChoice::Gl => ResolvedRenderer::Glow,
@@ -110,6 +111,7 @@ pub fn run(
         let handle = handle.clone();
         let name = name.clone();
         let initial = initial.clone();
+        let miracast = miracast.clone();
         let log = log.clone();
         let hwdec = args.want_hwdec();
         let software_decoder = args.software_decoder();
@@ -119,6 +121,7 @@ pub fn run(
             let handle = handle.clone();
             let name = name.clone();
             let initial = initial.clone();
+            let miracast = miracast.clone();
             let log = log.clone();
             Box::new(move |cc: &eframe::CreationContext<'_>| {
                 let capture =
@@ -172,10 +175,14 @@ pub fn run(
                     capture,
                     cursor_tex: None,
                     cursor_rate: (Instant::now(), 0, 0.0),
+                    miracast: None,
                 };
                 if let Some(target) = initial {
                     app.screen = Screen::View;
                     app.connect(&cc.egui_ctx, target);
+                } else if let Some(peer) = miracast {
+                    app.screen = Screen::View;
+                    app.connect_miracast(&cc.egui_ctx, peer);
                 }
                 Ok(Box::new(app) as Box<dyn eframe::App>)
             }) as eframe::AppCreator<'_>
@@ -258,6 +265,8 @@ struct MirrorApp {
     cursor_tex: Option<(u32, egui::TextureHandle)>,
     /// Viewer: (window start, updates at start, updates/s) for the HUD.
     cursor_rate: (Instant, u64, f64),
+    /// Watching a Miracast source (`view --miracast`), with its peer-name filter; for Retry.
+    miracast: Option<Option<String>>,
 }
 
 impl MirrorApp {
@@ -292,6 +301,34 @@ impl MirrorApp {
             },
             Some(Arc::new(move || repaint.request_repaint())),
         ));
+    }
+
+    /// `view --miracast`: a Miracast source through the same video view (feature `miracast`).
+    #[cfg(feature = "miracast")]
+    fn connect_miracast(&mut self, ctx: &egui::Context, peer: Option<String>) {
+        let repaint = ctx.clone();
+        self.error = None;
+        self.texture = None;
+        self.yuv = None;
+        self.cursor_tex = None;
+        self.last_target = None;
+        self.miracast = Some(peer.clone());
+        self.watching = Some(crate::miracast::spawn(
+            &self.runtime,
+            crate::miracast::MiracastOptions {
+                hwdec: self.hwdec,
+                software_decoder: self.software_decoder,
+                rgba: self.renderer != ResolvedRenderer::Glow,
+                peer,
+                rtp_port: 19000,
+            },
+            Some(Arc::new(move || repaint.request_repaint())),
+        ));
+    }
+
+    #[cfg(not(feature = "miracast"))]
+    fn connect_miracast(&mut self, _ctx: &egui::Context, _peer: Option<String>) {
+        self.error = Some("this build has no Miracast support (cargo feature `miracast`)".into());
     }
 
     fn disconnect(&mut self, ctx: &egui::Context) {
@@ -539,8 +576,12 @@ impl MirrorApp {
         }
         ui.add_space(8.0);
         let progress = status.trace.snapshot();
-        for step in &progress.steps {
-            step_row(ui, step);
+        if let Some(note) = &status.note {
+            ui.label(note);
+        } else {
+            for step in &progress.steps {
+                step_row(ui, step);
+            }
         }
         if let Some(err) = progress.error.as_ref().or(status.error.as_ref()) {
             ui.add_space(8.0);
@@ -571,6 +612,9 @@ impl MirrorApp {
                 if let Some(target) = self.last_target.clone() {
                     self.disconnect(ui.ctx());
                     self.connect(ui.ctx(), target);
+                } else if let Some(peer) = self.miracast.clone() {
+                    self.disconnect(ui.ctx());
+                    self.connect_miracast(ui.ctx(), peer);
                 }
             }
             if ui.button("Cancel").clicked() {
