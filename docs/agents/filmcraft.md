@@ -8,8 +8,8 @@ can be judged against known numbers.
 
 | Use | Crate | Pin | Notes |
 |---|---|---|---|
-| H.264 **software decoder** (fallback when no hardware decoder works; macOS keeps FFmpeg) | `mirrorwire-film` (all API calls), used by `mirrorwire-media/src/film_decode.rs` (desktop, maps to `YuvImage`) and `mirrorwire-android` (re-export `film`) | `craft-video` @ craft-libs `09dcbc22` | Decision log 2026-11-15 |
-| H.264 **encoder** (optional, `--features filmcraft`, `--encoder filmcraft`) | `mirrorwire-media/src/filmcraft.rs` | `filmcraft-h264enc` @ filmcraft `cb9783ba` (pulls craft-libs at the same commit) | Decision log 2026-11 |
+| H.264 **software decoder** (fallback when no hardware decoder works; macOS keeps FFmpeg) | `mirrorwire-film` (all API calls), used by `mirrorwire-media/src/film_decode.rs` (desktop, maps to `YuvImage`) and `mirrorwire-android` (re-export `film`) | `craft-video` (`h264-decode`) @ craft-libs `068e079c` | Decision log 2026-11-15 |
+| H.264 **encoder** (optional, `--features filmcraft`, `--encoder filmcraft`) | `mirrorwire-media/src/filmcraft.rs` | `craft-video` (`h264-encode`, `threads`) @ craft-libs `068e079c`, pinned in `mirrorwire-media/Cargo.toml` | D23 (was `filmcraft-h264enc` @ filmcraft `cb9783ba` until 2026-11-21) |
 | H.264 **hardware decoder**: planned, not built | will go into `mirrorwire-film` | — | §4 |
 
 `mirrorwire-film` exposes only `FilmDecoder::decode(&[u8]) -> Result<Option<Planes>>` (tight
@@ -18,8 +18,10 @@ upstream is fixed in that one crate.
 
 ## 2. Upgrading
 
-1. Bump the rev in `crates/mirrorwire-film/Cargo.toml`. If the encoder is bumped too, keep both
-   on the same craft-libs commit (`cargo tree -d | grep craft` must show one copy).
+1. Bump the craft-libs rev in `crates/mirrorwire-film/Cargo.toml` (decoder) **and**
+   `crates/mirrorwire-media/Cargo.toml` (encoder) to the same commit, then
+   `cargo update -p craft-video` in `fuzz/` (own lock file). Cargo.lock must list one
+   `craft-video`/`craft-media` (`grep -A2 'name = "craft-' Cargo.lock`).
 2. Fix `crates/mirrorwire-film/src/lib.rs` if the API moved. Keep: one worker thread (no output
    delay), panics caught, tight planes.
 3. Gates (AGENTS.md §3), including `cargo ndk -t arm64-v8a clippy -p mirrorwire-android`.
@@ -33,7 +35,10 @@ upstream is fixed in that one crate.
    Expect: every access unit gives one picture ("0 calls without a picture"), 0 errors, and a P
    time no worse than §3. Then the loopback with `--software-decode` and, for Android, the
    tablet with the home-screen **Software decoder (FilmCraft)** switch.
-5. Record the new numbers in §3 (date, rev) in the same commit.
+5. Encoder: `cargo test -p mirrorwire-media --no-default-features --features filmcraft`
+   (pure-Rust round trip) and, with FFmpeg, the `bench_filmcraft_vs_x264` bench
+   ([testing.md](testing.md) §3.1).
+6. Record the new numbers in §3 (date, rev) in the same commit.
 
 The test recording is not in the repository (130 MB). Make one by teeing the presenter's
 Annex B output to a file; the 2026-11-15 one was `h264_vaapi` 1080p60, 2804 access units,
@@ -51,6 +56,20 @@ Same 2804-AU recording, one access unit per call, single thread.
 | Build box (x86-64), `mirrorwire-film` bench | 2804/2804 pictures, 0 errors, no output delay, **bit-exact with FFmpeg** (also on two simulated-loss variants). IDR 49.4 ms mean (p95 69.0), P 15.7 ms mean (p50 13.6, p95 26.3) |
 | Build box, loopback 1080p60 (x264) | decode 15.9 ms, capture→decoded 36 ms. FFmpeg software: 4.2 ms / 19.8 ms. FFmpeg VAAPI: 8.9 ms / 27 ms. FilmCraft has no SIMD yet |
 | Lenovo TB336FU (MT8755, Cortex-A76), app switch forced | decode 14–16 ms, 38–48 fps, live through 24 presenter encoder reopens, 0 errors. 14.8 ms per P-frame in the offline bench vs 80–155 ms for `c2.android.avc.decoder` |
+
+### 3.1a Encoder and decoder move to craft-libs `068e079c` (2026-11-21, D23)
+
+Research container (4 vCPU VM, no GPU, no FFmpeg), release builds, same inputs old vs new.
+
+- Decoder, `mirrorwire-film` bench on the TB336FU Miracast recording `stream-run4d.h264`
+  (1080p, 565 AUs, 5 IDR): 565/565 pictures, 0 errors, no output delay with both revs; the I420
+  output is **byte-identical** between `09dcbc22` and `068e079c` (md5 `fa89e711…`; no `ffmpeg`
+  CLI here for the FFmpeg comparison). IDR 38.3 → 40.5 ms mean, P 8.80 → 8.82 ms mean (noise).
+- Encoder, 1080p synthetic moving pattern, 120 frames, CBR 15 Mbit/s, `Encoder::encode` incl.
+  BGRx→I420 conversion: `filmcraft-h264enc` @ `cb9783ba` 63.2 / 64.0 ms mean (two runs),
+  `craft-video` @ `068e079c` with `threads` 64.2 / 62.6 ms, same output size (15.04 Mbit/s at
+  60 fps); without `threads` 121.7 ms (slices encoded on one thread), hence the feature.
+  The x264 comparison bench and the loopback need FFmpeg: not run here.
 
 ### 3.2 Hardware decoder via VA-API, filmcraft `cb9783ba` (2026-11-15, prototype only)
 

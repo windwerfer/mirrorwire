@@ -93,7 +93,8 @@ Linux, VideoToolbox on macOS, then x264. The chosen encoder is reported in `Stre
 in both GUIs. The presenter GUI's Quality panel has an Encoder selector; Apply re-opens the
 encoder live, and if the new one can't open, the old one keeps running (logged).
 
-`filmcraft` is the pure-Rust `filmcraft-h264enc` (MIT/Apache), compiled only with cargo feature
+`filmcraft` is FilmCraft's pure-Rust H.264 encoder (`craft-video` from craft-libs, feature
+`h264-encode`, MIT/Apache, D23; reported as `filmcraft-h264enc`), compiled only with cargo feature
 `filmcraft` (`mirrorwire-media/src/filmcraft.rs`). It takes the same swscale I420 picture as
 x264, so the two software encoders compare like for like. Encoder name and per-frame encode
 time (last and 1 s mean) are in the presenter's per-second log line and status panel.
