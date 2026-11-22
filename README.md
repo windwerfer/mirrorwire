@@ -158,7 +158,10 @@ flatpak run io.github.windwerfer.MirrorWire present     # Flatpak
 (for X11 only), `--share=network` (QUIC and mDNS), `--device=dri` (VAAPI and GPU
 rendering), and `--system-talk-name=org.fedoraproject.FirewallD1` (so the presenter
 can see whether firewalld runs and, only after you click **Open port for me…**, ask it
-to open the UDP port; that click shows one password dialog).
+to open the UDP port; that click shows one password dialog), and
+`--system-talk-name=org.freedesktop.NetworkManager` (Wi-Fi Direct for **View your Android
+device (Miracast-compatible)**: find the device, create a temporary connection, remove it
+again; NetworkManager's own Polkit rules apply).
 There is no host filesystem access. Screen capture goes through the
 ScreenCast portal, which needs no extra permission. Settings live in
 `~/.var/app/io.github.windwerfer.MirrorWire/config/mirrorwire`.
