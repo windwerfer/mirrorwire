@@ -93,10 +93,17 @@ fn is_unknown_object(e: &zbus::Error) -> bool {
 
 fn map_err(e: zbus::Error) -> P2pError {
     let text = e.to_string();
-    if text.contains("NotAuthorized") || text.contains("AccessDenied") {
+    // NM answers a Polkit refusal with its own `org.freedesktop.NetworkManager.PermissionDenied`.
+    if text.contains("NotAuthorized")
+        || text.contains("AccessDenied")
+        || text.contains("PermissionDenied")
+    {
         P2pError::PermissionDenied(text)
     } else if text.contains("ServiceUnknown") || text.contains("NameHasNoOwner") {
-        P2pError::NotAvailable(format!("NetworkManager is not running ({text})"))
+        // Also what a Flatpak's bus proxy answers when the NM name is not allowed.
+        P2pError::NotAvailable(format!(
+            "NetworkManager is not running or cannot be reached ({text})"
+        ))
     } else {
         P2pError::Backend(text)
     }
@@ -407,9 +414,10 @@ mod tests {
         let e = map_err(zbus::Error::Failure(
             "org.freedesktop.NetworkManager.PermissionDenied".into(),
         ));
-        assert!(matches!(
-            e,
-            P2pError::Backend(_) | P2pError::PermissionDenied(_)
+        assert!(matches!(e, P2pError::PermissionDenied(_)), "{e:?}");
+        let e = map_err(zbus::Error::Failure(
+            "org.freedesktop.DBus.Error.ServiceUnknown: name not found".into(),
         ));
+        assert!(matches!(e, P2pError::NotAvailable(_)), "{e:?}");
     }
 }
