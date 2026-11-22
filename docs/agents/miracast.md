@@ -44,10 +44,9 @@ TCP **7236** (RTSP, the sink listens) and inbound UDP on the RTP port the sink a
 so this works on a stock install. A P2P group interface that lands in a stricter zone needs
 those two ports; if the sink is the GO and NM runs DHCP for it, UDP 67 must be reachable too
 (NM's `shared` method uses the `nm-shared` zone, which allows DHCP/DNS). The MirrorWire
-Flatpak already has `--system-talk-name=org.fedoraproject.FirewallD1`, but **a Miracast spike
-must not add any Flatpak permission** (NM D-Bus access from a sandbox would need a new
-`--system-talk-name=org.freedesktop.NetworkManager`, an owner decision). Spike scope: native
-binary / example only.
+Flatpak has `--system-talk-name=org.fedoraproject.FirewallD1` and, since 2026-11-22 (owner
+decision D24), `--system-talk-name=org.freedesktop.NetworkManager` for the NM Wi-Fi P2P API.
+(The spike itself added no permission and ran as a native binary.)
 
 ## 2. Network structure
 
@@ -636,7 +635,13 @@ open (the Wi-Fi Display spec text is not available on the research box):
 | Intel 8265 interface combinations (`iw list`) | partly | `iw` was not available; the owner confirmed one shared radio (station + P2P), consistent with run 4 (5300 vs 2462 MHz, link loss) and run 5 (same channel, no loss) |
 | `bind-activation: dbus-client` | open | never tried; the app removes the profile itself on Cancel/close |
 
-Flatpak note: the Flatpak cannot reach NetworkManager's system-bus API without a new
-`--system-talk-name=org.freedesktop.NetworkManager`, which AGENTS.md §1.2 does not allow
-without the owner. Until then the Miracast-compatible button only works in native builds
-(AppImage, distribution package, `cargo build`); in the Flatpak it will show "not available".
+Flatpak note (D24, 2026-11-22): the manifest has
+`--system-talk-name=org.freedesktop.NetworkManager`, so the Miracast-compatible button works
+in the Flatpak as in native builds (not yet tried in an installed Flatpak bundle). Error pages:
+NM missing or unreachable (also a Flatpak whose NM permission was removed with an override:
+the bus proxy answers `ServiceUnknown`) -> "Receiving from Android is not available", inside
+the Flatpak with the `flatpak override --user --system-talk-name=org.freedesktop.NetworkManager
+io.github.windwerfer.MirrorWire` command; no Wi-Fi P2P device -> the same page with the
+wpa_supplicant hint; Polkit refusal (`NotAuthorized`, `AccessDenied` or NM's
+`org.freedesktop.NetworkManager.PermissionDenied`) -> "Receiving from Android was not allowed",
+no retry. Flathub justification text: `packaging/flatpak/README.md`.

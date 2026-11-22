@@ -1,7 +1,9 @@
-# HANDOFF (branch miracast-spike)
+# HANDOFF (branch flatpak-nm, based on main a5344da)
 
 ## Goal
-Current (step 13, 2026-11-21): make `cargo xtask ci` green again (clippy dead_code) and take the FilmCraft encoder from craft-libs (`craft-video`, `h264-encode`) with one craft-libs pin for the workspace; then full CI on the box and merge into main.
+Current (step 14, 2026-11-22): owner decision D24, add `--system-talk-name=org.freedesktop.NetworkManager` to the Flatpak so the Miracast-compatible button works after install; accurate "not available"/"not allowed" messages; Flathub justification text.
+
+Step 13 (2026-11-21, 2026-11-21): make `cargo xtask ci` green again (clippy dead_code) and take the FilmCraft encoder from craft-libs (`craft-video`, `h264-encode`) with one craft-libs pin for the workspace; then full CI on the box and merge into main.
 
 Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink), rootless via NetworkManager D-Bus WifiP2P + Polkit. Clean-room, new crates only, never touch main. Steps 1-6 one per session.
 
@@ -60,7 +62,14 @@ Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE lapto
   - Measured old vs new (container, 4 vCPU): encoder 1080p ~63 ms both (122 ms without `threads`), same bitrate; decoder on `stream-run4d.h264` byte-identical I420, same timings. Numbers in filmcraft.md §3.1a.
   - `d86f0db` D23 + filmcraft.md + architecture.md.
 
+- Step 14 (Flatpak NetworkManager permission, 2026-11-22, branch `flatpak-nm`, local commits only):
+  - `fd744d7` miracast-nm `map_err`: NM's `org.freedesktop.NetworkManager.PermissionDenied` (Polkit refusal) was mapped to `Backend`, so it was retried and shown as "connection did not form"; now `PermissionDenied`. The test accepted `Backend`; now strict (failed before the fix). `ServiceUnknown` text: "not running or cannot be reached".
+  - `e651d3f` app: `Issue::NotAllowed` ("Receiving from Android was not allowed", Polkit text); `Issue::NotAvailable` adds, inside a Flatpak (`/.flatpak-info`), the `flatpak override --user --system-talk-name=org.freedesktop.NetworkManager io.github.windwerfer.MirrorWire` hint for users who removed the permission.
+  - `9ce3598` manifest finish-arg with comment; D24 (table + log, rejected alternative), D2, AGENTS.md §1.2, README permissions, miracast.md §1 and the §15 Flatpak note; new `packaging/flatpak/README.md` (permission table, Flathub review justification with the exact D-Bus calls, GNOME Network Displays comparison, how to remove the permission).
+
 ## Decisions
+- D24: Flatpak gets `--system-talk-name=org.freedesktop.NetworkManager` (owner 2026-11-22). Rejected: no permission + `flatpak override`/Flatseal hint.
+- The "not available" page stays (NM missing, no P2P device, permission removed by override); the override hint is shown only inside the Flatpak. Polkit refusals are not retried and get their own page.
 - D23: FilmCraft encoder from craft-libs at the decoder's rev; `threads` feature on (slice parallelism; the decoder stays single-threaded via `with_threads(1)`). Rejected: keep depending on the full FilmCraft repo.
 - Encoder display name stays `filmcraft-h264enc` (it is sent in `StreamInfo`; renaming is not needed for the switch).
 - D22: Miracast only as a descriptive term; feature `miracast` default on Linux only.
@@ -78,7 +87,8 @@ Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE lapto
 - Step 13: default-feature CI (`cargo xtask ci` with portal + ffmpeg), the x264-vs-FilmCraft bench, the FilmCraft loopback and `cargo ndk -t arm64-v8a clippy -p mirrorwire-android` were not run here (no libpipewire/FFmpeg/NDK). Decoder output was compared old rev vs new rev only (no `ffmpeg` CLI for the FFmpeg bit-exact check).
 - Cargo.lock now lists rav1e and ~30 crates via craft-video's weak `rav1e?/threading` in `threads`; they are not compiled (`cargo tree -i rav1e`: none) but show in cargo-deny's duplicate warnings. Upstream could split `threads` per codec.
 - Does craft-libs `068e079c` fix the fuzz finding (h264 `decoder.rs:532` subtract overflow)? If so, drop `continue-on-error` in `fuzz.yml`; not checked.
-- Flatpak: the Miracast-compatible button needs `--system-talk-name=org.freedesktop.NetworkManager` to work in the Flatpak; adding it is an owner decision (AGENTS.md 1.2, section 5). Until then it shows "not available" there; native builds work.
+- Step 14: GNOME Network Displays comparison is NOT confirmed. Flathub's summary API (read 2026-11-22, v0.99.0) lists sockets wayland/fallback-x11/pulseaudio, shared ipc/network, devices dri and no system-bus name. Check `flatpak remote-info --show-metadata flathub org.gnome.NetworkDisplays` (metadata only, D20) before using it in a Flathub submission; otherwise drop the comparison (packaging/flatpak/README.md says so).
+- Step 14: not built with flatpak-builder (not installed here), not run as an installed Flatpak; the Flatpak NM path, the exact error a bus proxy returns for a disallowed name (assumed `ServiceUnknown`), and the Polkit page are untested on hardware. Commit `e651d3f` mentions D24, which `9ce3598` adds right after.
 - Remaining [verify] items (miracast.md §15): WFD level bits, other CEA bits, LPCM sample-rate bit, `bind-activation`. None affects the working path.
 - KWin check: `journalctl --user -b` is not readable from the research container (no journal files, `/var/log/journal` empty). Either run the GUI checks where the journal is readable or mount the journal read-only; until then no GUI starts on the owner's desktop.
 - The previous viewer runs (6a-6e, wgpu window) happened before the KWin rule; whether they caused the KWin DRM loss is unknown from here.
@@ -98,12 +108,16 @@ Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE lapto
 - The research box is a VM without Wi-Fi/iw/NM: nothing about the Intel 8265 was measured; the doc lists what to run on the T480s (section 9). Facts marked [verify] in miracast.md (WFD IE bits, wfd_* masks, NM incoming GO negotiation = risk R1) come from memory of the specs and are unconfirmed.
 
 ## Verify
+Step 14: `git log --oneline a5344da..flatpak-nm` (3 commits); `cargo fmt --all --check`; `cargo test -p miracast-nm -p miracast-loopback`; `cargo test -p mirrorwire-app --no-default-features --features gui,filmcraft,miracast` (32 pass, the x264 test fails without FFmpeg); `cargo clippy -p mirrorwire-app -p miracast-nm --all-targets --no-default-features --features gui,filmcraft,miracast -- -D warnings`; manifest parse: no PyYAML here, parsed with a throwaway serde_yaml binary in /tmp (finish-args list printed, 7 entries). On the box: `flatpak-builder --user --install build-dir packaging/flatpak/io.github.windwerfer.MirrorWire.yml`, `flatpak info --show-permissions io.github.windwerfer.MirrorWire`.
+
 Step 13: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --no-default-features --features gui,filmcraft,miracast -- -D warnings` and the same with `gui,filmcraft`; `cargo test --no-fail-fast -p mirrorwire-media -p mirrorwire-film -p mirrorwire-app --no-default-features --features mirrorwire-app/gui,mirrorwire-app/filmcraft,mirrorwire-app/miracast` (22 + 2 + 31/32, the one failure needs x264); `cargo deny --all-features --locked check advisories bans licenses sources`; `(cd fuzz && cargo check --locked)`; `grep -A2 'name = "craft-' Cargo.lock` (one rev). On the box: `cargo xtask ci`.
 
 `git log --oneline 767ed3c..miracast-spike`; `cargo test -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback` (94 tests); `cargo clippy -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback --all-targets -- -D warnings`; `cargo fmt --all --check`; `cargo xtask layers`. `cargo xtask ci` cannot build in the research container (no libpipewire-0.3 dev package), unrelated to the spike.
 
 ## Next step
-Step 13 done: run the full `cargo xtask ci` (default features), `cargo audit`/`cargo deny`, the FilmCraft loopback (`MIRRORWIRE_FEATURES=filmcraft scripts/loopback-test.sh 10 --encoder filmcraft`) and the Android clippy on the build box; if green, merge miracast-spike into main.
+Step 14: manager reviews and merges `flatpak-nm` into main (and pushes; CI + Build must go green, the Flatpak job builds the new manifest). Then on the T480s: install the CI Flatpak bundle and try the Miracast-compatible button with the TB336FU; also `flatpak override --user --no-system-talk-name=org.freedesktop.NetworkManager io.github.windwerfer.MirrorWire` once to see the "not available" page with the hint, then restore. Confirm the GNOME Network Displays metadata before a Flathub submission.
+
+Earlier (step 13): Step 13 done: run the full `cargo xtask ci` (default features), `cargo audit`/`cargo deny`, the FilmCraft loopback (`MIRRORWIRE_FEATURES=filmcraft scripts/loopback-test.sh 10 --encoder filmcraft`) and the Android clippy on the build box; if green, merge miracast-spike into main.
 
 Earlier: Owner/manager: try the start screen button on the T480s (with the KWin journal check), then build the default app with `--features miracast` on a box with libpipewire and FFmpeg (VAAPI decode) and repeat run 6; then a home-screen entry ("Receive Miracast") and a cancellable NM join. Optionally `bind-activation: dbus-client` so a killed sink leaves no group (Ctrl-C today leaves the volatile profile active until NM drops it).
 

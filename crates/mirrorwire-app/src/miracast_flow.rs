@@ -37,8 +37,10 @@ pub enum Phase {
 /// A problem the user has to understand (AGENTS.md 1.8).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Issue {
-    /// No NetworkManager Wi-Fi Direct, permission refused, or another backend error.
+    /// No NetworkManager, no Wi-Fi P2P device, or (Flatpak) NM cannot be reached.
     NotAvailable(String),
+    /// NetworkManager (Polkit) refused the Wi-Fi Direct request.
+    NotAllowed(String),
     /// Discovery found no Android device.
     NoSource,
     /// The Wi-Fi Direct group did not form (also after the automatic retries).
@@ -75,9 +77,8 @@ impl Phase {
     /// The join failed: what it means depends on how far it got.
     pub fn on_join_error(&self, e: &P2pError) -> Phase {
         Phase::Failed(match (self, e) {
-            (_, P2pError::NotAvailable(m) | P2pError::PermissionDenied(m)) => {
-                Issue::NotAvailable(m.clone())
-            }
+            (_, P2pError::NotAvailable(m)) => Issue::NotAvailable(m.clone()),
+            (_, P2pError::PermissionDenied(m)) => Issue::NotAllowed(m.clone()),
             (Phase::Starting | Phase::Searching, P2pError::Timeout(_)) => Issue::NoSource,
             (_, e) => Issue::GroupFailed(e.to_string()),
         })
@@ -199,6 +200,7 @@ pub fn view(phase: &Phase, device: &str, has_picture: bool) -> View {
 fn title(issue: &Issue) -> &'static str {
     match issue {
         Issue::NotAvailable(_) => "Receiving from Android is not available",
+        Issue::NotAllowed(_) => "Receiving from Android was not allowed",
         Issue::NoSource => "No Android device found",
         Issue::GroupFailed(_) => "The connection could not be set up",
         Issue::SourceNeverStarted => "Your Android device did not start casting",
@@ -211,9 +213,12 @@ fn title(issue: &Issue) -> &'static str {
 /// The plain-language explanation of `issue`.
 pub fn message(issue: &Issue, device: &str) -> String {
     match issue {
-        Issue::NotAvailable(m) => {
-            format!("This computer cannot use Wi-Fi Direct through NetworkManager right now: {m}")
-        }
+        Issue::NotAvailable(m) => not_available(m, in_flatpak()),
+        Issue::NotAllowed(m) => format!(
+            "NetworkManager refused the Wi-Fi Direct request. Try again and allow it if a \
+             password prompt appears; on a managed computer the administrator may have to \
+             allow NetworkManager network control. ({m})"
+        ),
         Issue::NoSource => "No Android device was found. Turn wireless display on in Settings > \
                             Cast on your Android device, keep that screen open, and try again."
             .into(),
@@ -244,6 +249,29 @@ pub fn message(issue: &Issue, device: &str) -> String {
             .into(),
         Issue::Other(reason) => format!("The stream ended: {reason}."),
     }
+}
+
+/// Text for [`Issue::NotAvailable`]. In the Flatpak, NM is reachable through the manifest's
+/// `--system-talk-name=org.freedesktop.NetworkManager` (D24); a user who removed it with an
+/// override gets the same "cannot be reached" error, so the restore command is added.
+fn not_available(m: &str, flatpak: bool) -> String {
+    let mut text = format!(
+        "This computer cannot use Wi-Fi Direct through NetworkManager right now. Receiving \
+         from Android needs NetworkManager with Wi-Fi Direct (P2P) support. ({m})"
+    );
+    if flatpak {
+        text.push_str(
+            "\n\nIf MirrorWire's NetworkManager permission was removed (Flatseal or flatpak \
+             override), give it back with: flatpak override --user \
+             --system-talk-name=org.freedesktop.NetworkManager io.github.windwerfer.MirrorWire",
+        );
+    }
+    text
+}
+
+/// True inside a Flatpak sandbox (the runtime always provides `/.flatpak-info`).
+fn in_flatpak() -> bool {
+    std::path::Path::new("/.flatpak-info").exists()
 }
 
 #[cfg(test)]
@@ -430,11 +458,28 @@ mod tests {
         ));
         let denied = P2pError::PermissionDenied("polkit".into());
         let p = Phase::Starting.on_join_error(&denied);
+        assert!(matches!(p, Phase::Failed(Issue::NotAllowed(_))));
+        let (title, body) = done(view(&p, DEV, false));
+        assert!(title.contains("not allowed"));
+        assert!(body.contains("polkit") && body.contains("refused"));
+        let missing = P2pError::NotAvailable("no NM".into());
+        let p = Phase::Starting.on_join_error(&missing);
         assert!(matches!(p, Phase::Failed(Issue::NotAvailable(_))));
-        assert!(done(view(&p, DEV, false)).1.contains("polkit"));
+        assert!(done(view(&p, DEV, false)).1.contains("no NM"));
         assert!(done(view(&Phase::Failed(Issue::NoSource), DEV, false))
             .1
             .contains("wireless display on"));
+    }
+
+    #[test]
+    fn flatpak_hint_only_inside_the_sandbox() {
+        let native = not_available("not running", false);
+        assert!(native.contains("not running") && !native.contains("flatpak override"));
+        let sandboxed = not_available("not running", true);
+        assert!(sandboxed.contains(
+            "flatpak override --user --system-talk-name=org.freedesktop.NetworkManager \
+             io.github.windwerfer.MirrorWire"
+        ));
     }
 
     #[test]
