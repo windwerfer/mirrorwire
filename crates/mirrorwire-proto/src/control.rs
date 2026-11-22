@@ -104,10 +104,14 @@ pub enum Control {
     /// the position inside the *picture* (not the window), 0 = left/top, 65535 = right/bottom.
     /// Sent on the reliable control stream so down/up are never lost or reordered; the viewer
     /// coalesces `move`s (about 60 per second) and the presenter rate limits them.
+    /// `pressure` (protocol 11): 0..=65535 from the viewer's pen or touch sensor, `null` when
+    /// the device reports none (mouse, finger without force). Always present on the wire.
     Pointer {
         phase: PointerPhase,
         x: u16,
         y: u16,
+        #[serde(deserialize_with = "Option::deserialize")]
+        pressure: Option<u16>,
     },
     Bye,
 }
@@ -155,7 +159,12 @@ impl RemoteKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteInput {
     Key(RemoteKey),
-    Pointer { phase: PointerPhase, x: u16, y: u16 },
+    Pointer {
+        phase: PointerPhase,
+        x: u16,
+        y: u16,
+        pressure: Option<u16>,
+    },
 }
 
 /// Phase of a [`Control::Pointer`] event. Down = left button pressed, up = released.
@@ -177,6 +186,13 @@ pub fn pointer_in_rect(px: f32, py: f32, rect: (f32, f32, f32, f32)) -> Option<(
     }
     let f = |v: f32| (v.clamp(0.0, 1.0) * 65535.0).round() as u16;
     Some((f((px - l) / w), f((py - t) / h)))
+}
+
+/// Wire pressure for a sensor reading `force` (0.0 = none, 1.0 = full, as egui reports
+/// touch force). `None` for no reading or a value that is not finite; clamped otherwise.
+pub fn pressure_from_force(force: Option<f32>) -> Option<u16> {
+    let f = force.filter(|f| f.is_finite())?;
+    Some((f.clamp(0.0, 1.0) * 65535.0).round() as u16)
 }
 
 /// Map a normalised 0..=65535 position onto a stream of `size` pixels. `None` if the size
@@ -394,20 +410,37 @@ mod tests {
             phase: PointerPhase::Down,
             x: 100,
             y: 65535,
+            pressure: Some(4000),
         };
         let wire = msg.encode();
         assert_eq!(
             std::str::from_utf8(&wire[4..]).unwrap(),
-            r#"{"type":"pointer","phase":"down","x":100,"y":65535}"#
+            r#"{"type":"pointer","phase":"down","x":100,"y":65535,"pressure":4000}"#
         );
         assert_eq!(Control::decode_body(&wire[4..]).unwrap(), msg);
-        // Out of range, negative, float, unknown phase: errors.
+        let none = Control::Pointer {
+            phase: PointerPhase::Move,
+            x: 0,
+            y: 0,
+            pressure: None,
+        };
+        let wire = none.encode();
+        assert_eq!(
+            std::str::from_utf8(&wire[4..]).unwrap(),
+            r#"{"type":"pointer","phase":"move","x":0,"y":0,"pressure":null}"#
+        );
+        assert_eq!(Control::decode_body(&wire[4..]).unwrap(), none);
+        // Out of range, negative, float, unknown phase, missing pressure: errors.
         for bad in [
-            r#"{"type":"pointer","phase":"down","x":65536,"y":0}"#,
-            r#"{"type":"pointer","phase":"down","x":-1,"y":0}"#,
-            r#"{"type":"pointer","phase":"down","x":0.5,"y":0}"#,
-            r#"{"type":"pointer","phase":"drag","x":0,"y":0}"#,
-            r#"{"type":"pointer","phase":"up","x":0}"#,
+            r#"{"type":"pointer","phase":"down","x":65536,"y":0,"pressure":null}"#,
+            r#"{"type":"pointer","phase":"down","x":-1,"y":0,"pressure":null}"#,
+            r#"{"type":"pointer","phase":"down","x":0.5,"y":0,"pressure":null}"#,
+            r#"{"type":"pointer","phase":"drag","x":0,"y":0,"pressure":null}"#,
+            r#"{"type":"pointer","phase":"up","x":0,"pressure":null}"#,
+            r#"{"type":"pointer","phase":"down","x":0,"y":0}"#,
+            r#"{"type":"pointer","phase":"down","x":0,"y":0,"pressure":65536}"#,
+            r#"{"type":"pointer","phase":"down","x":0,"y":0,"pressure":-1}"#,
+            r#"{"type":"pointer","phase":"down","x":0,"y":0,"pressure":0.5}"#,
         ] {
             assert!(Control::decode_body(bad.as_bytes()).is_err(), "{bad}");
         }
@@ -427,6 +460,18 @@ mod tests {
         assert_eq!(pointer_to_stream(1, 1, (0, 100)), None);
         assert_eq!(pointer_to_stream(1, 1, (100, -5)), None);
         assert_eq!(pointer_to_stream(1, 1, (i32::MAX, 5)), None);
+    }
+
+    #[test]
+    fn pressure_from_force_is_clamped() {
+        assert_eq!(pressure_from_force(None), None);
+        assert_eq!(pressure_from_force(Some(f32::NAN)), None);
+        assert_eq!(pressure_from_force(Some(f32::INFINITY)), None);
+        assert_eq!(pressure_from_force(Some(0.0)), Some(0));
+        assert_eq!(pressure_from_force(Some(0.5)), Some(32768));
+        assert_eq!(pressure_from_force(Some(1.0)), Some(65535));
+        assert_eq!(pressure_from_force(Some(3.0)), Some(65535));
+        assert_eq!(pressure_from_force(Some(-1.0)), Some(0));
     }
 
     #[test]

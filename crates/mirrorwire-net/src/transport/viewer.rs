@@ -184,10 +184,21 @@ impl ViewerSession {
         let _ = self.control.send(Control::RemoteKey { key });
     }
 
-    /// Pen/finger as an absolute pointer on the presenter (`pointer`, protocol 10); `x`/`y`
-    /// are 0..=65535 inside the picture.
-    pub fn send_pointer(&self, phase: mirrorwire_proto::control::PointerPhase, x: u16, y: u16) {
-        let _ = self.control.send(Control::Pointer { phase, x, y });
+    /// Pen/finger as an absolute pointer on the presenter (`pointer`, protocol 11); `x`/`y`
+    /// are 0..=65535 inside the picture, `pressure` 0..=65535 or `None` without a sensor.
+    pub fn send_pointer(
+        &self,
+        phase: mirrorwire_proto::control::PointerPhase,
+        x: u16,
+        y: u16,
+        pressure: Option<u16>,
+    ) {
+        let _ = self.control.send(Control::Pointer {
+            phase,
+            x,
+            y,
+            pressure,
+        });
     }
 
     pub fn control_sender(&self) -> mpsc::UnboundedSender<Control> {

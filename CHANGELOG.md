@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+- Protocol version 11: the `pointer` control message carries a required `pressure`
+  (0..65535, or `null` without a sensor). Presenter and viewer must both be updated.
+
 ## 0.1.0
 
 First release. Low-latency screen mirroring over a LAN.

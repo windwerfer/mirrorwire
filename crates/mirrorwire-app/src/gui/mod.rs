@@ -162,6 +162,7 @@ pub fn run(
                     show_remote: false,
                     pen_mode: false,
                     pen_down: false,
+                    pen_pressure: None,
                     pen_last_move: None,
                     fullscreen: false,
                     display_latency_ms: 0.0,
@@ -254,6 +255,8 @@ struct MirrorApp {
     /// normal tap does not click on the presenter).
     pen_mode: bool,
     pen_down: bool,
+    /// Last pen/touch force seen while pen mode is on (`None`: no sensor, e.g. a mouse).
+    pen_pressure: Option<u16>,
     pen_last_move: Option<Instant>,
     fullscreen: bool,
     display_latency_ms: f64,

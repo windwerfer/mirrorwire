@@ -432,12 +432,22 @@ async fn handle_viewer(incoming: quinn::Incoming, shared: Arc<SessionShared>) ->
                         }
                     }
                 }
-                Control::Pointer { phase, x, y } => {
+                Control::Pointer {
+                    phase,
+                    x,
+                    y,
+                    pressure,
+                } => {
                     if let Some(tx) = &shared.remote_keys {
                         if pointer_gate.allow(phase, Instant::now()) {
                             // A full channel drops a move (a newer one follows); a lost
                             // up would leave the button stuck, so ups wait for room.
-                            let input = RemoteInput::Pointer { phase, x, y };
+                            let input = RemoteInput::Pointer {
+                                phase,
+                                x,
+                                y,
+                                pressure,
+                            };
                             if phase == PointerPhase::Move {
                                 let _ = tx.try_send(input);
                             } else {

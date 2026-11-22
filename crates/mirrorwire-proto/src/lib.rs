@@ -17,7 +17,7 @@ pub mod stats;
 /// Presenter and viewer must speak the same version (checked in `hello`).
 /// Bumped on every incompatible change; there is no compatibility with
 /// other versions (decisions.md D6).
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 pub const ALPN: &[u8] = b"mirrorwire/1";
 pub const MDNS_SERVICE: &str = "_mirrorwire._udp.local.";
 pub const DEFAULT_PORT: u16 = 47_800;

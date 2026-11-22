@@ -411,24 +411,27 @@ mod tests {
         )
         .await
         .unwrap();
-        viewer.send_pointer(PointerPhase::Down, 10, 20);
-        viewer.send_pointer(PointerPhase::Move, 30, 40);
-        viewer.send_pointer(PointerPhase::Up, 30, 40);
+        viewer.send_pointer(PointerPhase::Down, 10, 20, Some(1000));
+        viewer.send_pointer(PointerPhase::Move, 30, 40, Some(65535));
+        viewer.send_pointer(PointerPhase::Up, 30, 40, None);
         for want in [
             RemoteInput::Pointer {
                 phase: PointerPhase::Down,
                 x: 10,
                 y: 20,
+                pressure: Some(1000),
             },
             RemoteInput::Pointer {
                 phase: PointerPhase::Move,
                 x: 30,
                 y: 40,
+                pressure: Some(65535),
             },
             RemoteInput::Pointer {
                 phase: PointerPhase::Up,
                 x: 30,
                 y: 40,
+                pressure: None,
             },
         ] {
             let got = tokio::time::timeout(Duration::from_secs(5), rx.recv())

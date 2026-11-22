@@ -226,7 +226,9 @@ impl MirrorApp {
         picture: Option<egui::Rect>,
         status: &crate::viewer::ViewerStatus,
     ) {
-        use mirrorwire_proto::control::{pointer_in_rect, Control, PointerPhase};
+        use mirrorwire_proto::control::{
+            pointer_in_rect, pressure_from_force, Control, PointerPhase,
+        };
         let Some(tx) = &status.control else { return };
         let Some(pic) = picture else { return };
         if !self.pen_mode {
@@ -237,9 +239,22 @@ impl MirrorApp {
                     phase: PointerPhase::Up,
                     x: 0,
                     y: 0,
+                    pressure: None,
                 });
             }
             return;
+        }
+        // Latest pen/touch force this frame (protocol 11); a mouse has none. Read every frame
+        // (also when a move is coalesced away) and kept, because touch events do not arrive
+        // with every repaint.
+        let force = ctx.input(|i| {
+            i.raw.events.iter().rev().find_map(|e| match e {
+                egui::Event::Touch { force, .. } => Some(*force),
+                _ => None,
+            })
+        });
+        if let Some(f) = force {
+            self.pen_pressure = pressure_from_force(f);
         }
         let pos = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos()));
         let (pressed, released) = ctx.input(|i| {
@@ -278,7 +293,16 @@ impl MirrorApp {
         } else {
             return;
         };
-        let _ = tx.send(Control::Pointer { phase, x, y });
+        let pressure = self.pen_pressure;
+        if phase == PointerPhase::Up {
+            self.pen_pressure = None;
+        }
+        let _ = tx.send(Control::Pointer {
+            phase,
+            x,
+            y,
+            pressure,
+        });
     }
 
     /// The presenter's cursor as a textured quad over the video, mapped
