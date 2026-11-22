@@ -49,7 +49,9 @@ reason to crash; if it can't be read, start fresh and say so. See
    `--device=dri`, `--system-talk-name=org.fedoraproject.FirewallD1` (owner-approved,
    so the presenter can query or open its UDP port through firewalld; a password prompt
    may appear), and `--system-talk-name=org.freedesktop.NetworkManager` (owner-approved
-   2026-11-22, D24: Wi-Fi P2P for receiving from Android). No `--filesystem`, no `--device=all`, no other `--talk-name`. Adding
+   2026-11-22, D24: Wi-Fi P2P for receiving from Android), and
+   `--system-talk-name=org.freedesktop.hostname1` (owner-approved 2026-11-22, D25: read-only
+   hostname for the "Name shown on Android" line). No `--filesystem`, no `--device=all`, no other `--talk-name`. Adding
    another permission needs the owner.
 3. **The security model stays:** QUIC with TLS 1.3, a self-signed per-install certificate, the
    viewer pins the presenter's SHA-256 fingerprint, and the presenter only streams to a viewer

@@ -4,7 +4,7 @@
 
 use super::widgets::{copy_with_feedback, show_copy_note};
 use super::MirrorApp;
-use crate::miracast_flow::{view, View};
+use crate::miracast_flow::{name_line, view, View, NAME_HELP};
 use crate::sync::LockExt;
 use eframe::egui;
 
@@ -19,7 +19,9 @@ impl MirrorApp {
             .watching
             .as_ref()
             .is_some_and(|h| h.status.lock_ok().first_frame);
-        let shown = view(&phase, &self.name, self.has_picture() || first_frame);
+        let sink_name = session.sink_name();
+        let shown = view(&phase, &sink_name, self.has_picture() || first_frame);
+        let name_line = name_line(&sink_name);
         if phase.is_active() && self.watching.is_none() {
             // Left the video with Esc: the stop is already requested.
             self.go_home(ui.ctx());
@@ -41,6 +43,7 @@ impl MirrorApp {
                         ui.add_space(16.0);
                         ui.add(egui::Spinner::new().size(28.0));
                         ui.add_space(16.0);
+                        sink_name_ui(self, ui, name_line.as_ref());
                         copy_firewall_command(self, ui, &body);
                         if ui
                             .add(egui::Button::new("Cancel").min_size(egui::vec2(160.0, 32.0)))
@@ -65,6 +68,7 @@ impl MirrorApp {
                         ui.add_space(16.0);
                         ui.add(egui::Label::new(egui::RichText::new(&body).size(16.0)).wrap());
                         ui.add_space(16.0);
+                        sink_name_ui(self, ui, name_line.as_ref());
                         copy_firewall_command(self, ui, &body);
                         ui.horizontal(|ui| {
                             if ui
@@ -86,6 +90,32 @@ impl MirrorApp {
             }
         }
     }
+}
+
+/// "Name shown on Android: …" (D25). A missing name gets an ℹ; clicking or tapping the line
+/// opens or closes the explanation with the `hostnamectl` commands. Nothing when the name is
+/// unknown.
+fn sink_name_ui(app: &mut MirrorApp, ui: &mut egui::Ui, line: Option<&(String, bool)>) {
+    let Some((text, missing)) = line else {
+        return;
+    };
+    if !missing {
+        ui.label(text);
+        ui.add_space(8.0);
+        return;
+    }
+    let toggle = ui
+        .add(egui::Button::new(format!("{text}  ℹ")).frame(false))
+        .on_hover_text("Why is there no name?");
+    if toggle.clicked() {
+        app.miracast_name_help = !app.miracast_name_help;
+    }
+    if app.miracast_name_help {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.add(egui::Label::new(NAME_HELP).wrap());
+        });
+    }
+    ui.add_space(8.0);
 }
 
 /// A "Copy command" button when the text carries the firewall fix (NoRtp).

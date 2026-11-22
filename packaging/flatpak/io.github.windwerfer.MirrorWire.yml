@@ -13,13 +13,16 @@ finish-args:
   - --share=network
   - --device=dri
   # Query / open the presenter UDP port via firewalld (polkit prompt). No host
-  # filesystem and no generic --talk-name; the two system-bus names below are the only
+  # filesystem and no generic --talk-name; the three system-bus names below are the only
   # extra D-Bus names.
   - --system-talk-name=org.fedoraproject.FirewallD1
   # Receiving from Android (Miracast-compatible) needs NetworkManager's Wi-Fi P2P D-Bus API:
   # discovery, the volatile wifi-p2p profile and its IP config. There is no portal for it.
   # Only this one name; NM's Polkit rules still decide what the call may do (D24).
   - --system-talk-name=org.freedesktop.NetworkManager
+  # Read-only: hostname1's PrettyHostname/StaticHostname, the estimate of the name Android
+  # lists for this computer on the Miracast screen (D25; owner-approved 2026-11-22).
+  - --system-talk-name=org.freedesktop.hostname1
 # FFmpeg is not built or bundled (D8): the runtime's libav* is used at build time and the
 # ffmpeg-full extension (libx264, VA-API encoders) replaces it at run time.
 add-extensions:

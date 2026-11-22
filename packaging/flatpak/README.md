@@ -1,7 +1,7 @@
 # MirrorWire Flatpak
 
 Manifest: `io.github.windwerfer.MirrorWire.yml`. The `finish-args` are the ceiling set in
-AGENTS.md §1.2 and decisions D2/D24; adding one needs the owner.
+AGENTS.md §1.2 and decisions D2/D24/D25; adding one needs the owner.
 
 ## Permissions and why
 
@@ -13,6 +13,7 @@ AGENTS.md §1.2 and decisions D2/D24; adding one needs the owner.
 | `--device=dri` | VA-API encode/decode and GPU rendering |
 | `--system-talk-name=org.fedoraproject.FirewallD1` | the presenter shows whether firewalld blocks its UDP port and, only after the user clicks "Open port for me…", asks firewalld to open it (Polkit password dialog) |
 | `--system-talk-name=org.freedesktop.NetworkManager` | receiving from an Android device (Miracast-compatible, D24): Wi-Fi Direct (P2P) through NetworkManager |
+| `--system-talk-name=org.freedesktop.hostname1` | read-only: the pretty and static hostname, to show on the Miracast screen which name the Android device most likely lists this computer under (D25) |
 
 No host filesystem, no session-bus names, no `--talk-name`, no `--device=all`. Screen capture
 uses the ScreenCast portal.
@@ -41,12 +42,32 @@ Text for the Flathub submission (reviewers ask for a reason for every system-bus
 > - `IP4Config` `AddressData` / `Gateway` to reach the device's stream server;
 > - read-only `Device.Wireless.ActiveAccessPoint` and `AccessPoint.Frequency`, shown next to a
 >   session as a diagnostic (Wi-Fi Direct shares the radio with the station link).
+> - read-only `Settings.Hostname`, a fallback for the name line below when hostname1 cannot
+>   be reached.
 >
 > Nothing runs at startup: NetworkManager is contacted only after the user clicks "View your
 > Android device (Miracast-compatible)". NetworkManager's Polkit rules still decide each call
 > (`network-control`, `settings.modify.own`, `wifi.scan`); an active local desktop session
 > normally needs no password. MirrorWire never changes the user's saved connections,
 > needs no root, and installs no Polkit rules.
+
+## Flathub review: system bus access to hostname1
+
+> On the "View your Android device (Miracast-compatible)" screen MirrorWire shows "Name shown
+> on Android: …", the name the Android device most likely lists this computer under, and when
+> no name is set, an ℹ that explains how to set one with `hostnamectl` (Android then shows an
+> entry without a name, which users cannot find). The advertised Wi-Fi Direct name itself has
+> no unprivileged API (NetworkManager exposes none, wpa_supplicant's D-Bus API is root-only),
+> so MirrorWire estimates it from the system hostname, and systemd-hostnamed is the
+> documented, unprivileged place to read that.
+>
+> The permission is limited to one well-known name, `org.freedesktop.hostname1`. The app only
+> reads two properties of `/org/freedesktop/hostname1`: `PrettyHostname` and
+> `StaticHostname` (`org.freedesktop.DBus.Properties.Get`). It never calls a method and never
+> sets the hostname; the ℹ text tells the user which command to run themselves. The read
+> happens only when the Miracast screen opens, bounded to 3 seconds; nothing runs at startup.
+> NetworkManager's `Settings.Hostname` alone is not enough: it only knows the static
+> hostname, so it cannot tell "no name at all" from "only a pretty name set".
 
 ### Comparison with GNOME Network Displays
 
@@ -72,3 +93,7 @@ flatpak override --user --no-system-talk-name=org.freedesktop.NetworkManager io.
 The button then shows "Receiving from Android is not available" with the command that gives it
 back (`flatpak override --user --system-talk-name=org.freedesktop.NetworkManager
 io.github.windwerfer.MirrorWire`). Everything else keeps working.
+
+Removing `org.freedesktop.hostname1` the same way (`flatpak override --user
+--no-system-talk-name=org.freedesktop.hostname1 io.github.windwerfer.MirrorWire`) only affects
+the name line: it then falls back to NetworkManager's static hostname, or is hidden.
