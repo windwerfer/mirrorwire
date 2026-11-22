@@ -1,7 +1,9 @@
 # HANDOFF (branch flatpak-nm, based on main a5344da)
 
 ## Goal
-Current (step 14, 2026-11-22): owner decision D24, add `--system-talk-name=org.freedesktop.NetworkManager` to the Flatpak so the Miracast-compatible button works after install; accurate "not available"/"not allowed" messages; Flathub justification text.
+Current (step 16, 2026-11-22): show the name Android lists for this computer on the Miracast screen, with an ℹ hint (hostnamectl) when it is empty (D25).
+
+Step 14 (2026-11-22): owner decision D24, add `--system-talk-name=org.freedesktop.NetworkManager` to the Flatpak so the Miracast-compatible button works after install; accurate "not available"/"not allowed" messages; Flathub justification text.
 
 Step 13 (2026-11-21, 2026-11-21): make `cargo xtask ci` green again (clippy dead_code) and take the FilmCraft encoder from craft-libs (`craft-video`, `h264-encode`) with one craft-libs pin for the workspace; then full CI on the box and merge into main.
 
@@ -62,12 +64,17 @@ Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE lapto
   - Measured old vs new (container, 4 vCPU): encoder 1080p ~63 ms both (122 ms without `threads`), same bitrate; decoder on `stream-run4d.h264` byte-identical I420, same timings. Numbers in filmcraft.md §3.1a.
   - `d86f0db` D23 + filmcraft.md + architecture.md.
 
+- Step 16 (name shown on Android, 2026-11-22, branch `flatpak-nm`, local commits only):
+  - `07b676d` `miracast_nm::name::SinkName` (Named/Empty/Unknown) + pure selection (hostname1 Pretty -> Static -> Empty; NM `Settings.Hostname` fallback, empty -> Unknown; trimmed, no control chars, max 64 chars), `zbus_backend::sink_name()` (3 s bound, any error -> Unknown). 5 unit tests. Live read here against the host bus: `Empty` (hostname1 ""/"", NM Hostname "").
+  - `67a8567` GUI: "Name shown on Android: <name>" on every Miracast page except the video; "none ℹ" when empty, click/tap opens the hostnamectl explanation (`miracast_flow::NAME_HELP`); hidden when Unknown. Read on its own tokio task at flow start. Tap instructions use the estimate instead of MirrorWire's viewer name. D25, miracast.md §16, README, Flathub call list (`Settings.Hostname` read).
+
 - Step 14 (Flatpak NetworkManager permission, 2026-11-22, branch `flatpak-nm`, local commits only):
   - `fd744d7` miracast-nm `map_err`: NM's `org.freedesktop.NetworkManager.PermissionDenied` (Polkit refusal) was mapped to `Backend`, so it was retried and shown as "connection did not form"; now `PermissionDenied`. The test accepted `Backend`; now strict (failed before the fix). `ServiceUnknown` text: "not running or cannot be reached".
   - `e651d3f` app: `Issue::NotAllowed` ("Receiving from Android was not allowed", Polkit text); `Issue::NotAvailable` adds, inside a Flatpak (`/.flatpak-info`), the `flatpak override --user --system-talk-name=org.freedesktop.NetworkManager io.github.windwerfer.MirrorWire` hint for users who removed the permission.
   - `9ce3598` manifest finish-arg with comment; D24 (table + log, rejected alternative), D2, AGENTS.md §1.2, README permissions, miracast.md §1 and the §15 Flatpak note; new `packaging/flatpak/README.md` (permission table, Flathub review justification with the exact D-Bus calls, GNOME Network Displays comparison, how to remove the permission).
 
 ## Decisions
+- D25: name shown on Android = hostname1 PrettyHostname, then StaticHostname (estimate; NM has no documented P2P name property, wpa_supplicant DeviceName is root-only). Flatpak fallback NM `Settings.Hostname` (existing D24 name); empty -> line hidden. Rejected: new Flatpak permission `org.freedesktop.hostname1` (needs the owner).
 - D24: Flatpak gets `--system-talk-name=org.freedesktop.NetworkManager` (owner 2026-11-22). Rejected: no permission + `flatpak override`/Flatseal hint.
 - The "not available" page stays (NM missing, no P2P device, permission removed by override); the override hint is shown only inside the Flatpak. Polkit refusals are not retried and get their own page.
 - D23: FilmCraft encoder from craft-libs at the decoder's rev; `threads` feature on (slice parallelism; the decoder stays single-threaded via `with_threads(1)`). Rejected: keep depending on the full FilmCraft repo.
@@ -84,6 +91,7 @@ Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE lapto
 - See also miracast.md section 7 (sink first, sans-IO parsers, no HDCP/UIBC, audio demuxed not played, rejected: root helpers, direct wpa_supplicant D-Bus, GStreamer/FFmpeg demux, GPL code).
 
 ## Open questions
+- Step 16: owner may want `--system-talk-name=org.freedesktop.hostname1` in the Flatpak (D25 rejected it without the owner): today a Flatpak user with no static hostname (the T480s case) sees no name line, only native builds show "none ℹ". Not verified: that the P2P name follows the pretty rather than the static hostname, that toggling Wi-Fi applies a new name, the GUI look (no GUI run), the bus-proxy answer for hostname1 inside a Flatpak (any error or 3 s timeout -> NM fallback).
 - Step 13: default-feature CI (`cargo xtask ci` with portal + ffmpeg), the x264-vs-FilmCraft bench, the FilmCraft loopback and `cargo ndk -t arm64-v8a clippy -p mirrorwire-android` were not run here (no libpipewire/FFmpeg/NDK). Decoder output was compared old rev vs new rev only (no `ffmpeg` CLI for the FFmpeg bit-exact check).
 - Cargo.lock now lists rav1e and ~30 crates via craft-video's weak `rav1e?/threading` in `threads`; they are not compiled (`cargo tree -i rav1e`: none) but show in cargo-deny's duplicate warnings. Upstream could split `threads` per codec.
 - Does craft-libs `068e079c` fix the fuzz finding (h264 `decoder.rs:532` subtract overflow)? If so, drop `continue-on-error` in `fuzz.yml`; not checked.
@@ -108,6 +116,8 @@ Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE lapto
 - The research box is a VM without Wi-Fi/iw/NM: nothing about the Intel 8265 was measured; the doc lists what to run on the T480s (section 9). Facts marked [verify] in miracast.md (WFD IE bits, wfd_* masks, NM incoming GO negotiation = risk R1) come from memory of the specs and are unconfirmed.
 
 ## Verify
+Step 16: `git log --oneline 3d76ce4..flatpak-nm` (3 commits); `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --no-default-features --features gui,filmcraft,miracast -- -D warnings` and the same with `gui,filmcraft`; `cargo test -p miracast-nm -p miracast-loopback` (31 + 14); `cargo test -p mirrorwire-app --no-default-features --features gui,filmcraft,miracast` (34 pass, the x264 test fails without FFmpeg). On the T480s: open the Miracast screen, expect "Name shown on Android: none ℹ"; run the two hostnamectl commands, toggle Wi-Fi, check the tablet's Cast list.
+
 Step 14: `git log --oneline a5344da..flatpak-nm` (3 commits); `cargo fmt --all --check`; `cargo test -p miracast-nm -p miracast-loopback`; `cargo test -p mirrorwire-app --no-default-features --features gui,filmcraft,miracast` (32 pass, the x264 test fails without FFmpeg); `cargo clippy -p mirrorwire-app -p miracast-nm --all-targets --no-default-features --features gui,filmcraft,miracast -- -D warnings`; manifest parse: no PyYAML here, parsed with a throwaway serde_yaml binary in /tmp (finish-args list printed, 7 entries). On the box: `flatpak-builder --user --install build-dir packaging/flatpak/io.github.windwerfer.MirrorWire.yml`, `flatpak info --show-permissions io.github.windwerfer.MirrorWire`.
 
 Step 13: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --no-default-features --features gui,filmcraft,miracast -- -D warnings` and the same with `gui,filmcraft`; `cargo test --no-fail-fast -p mirrorwire-media -p mirrorwire-film -p mirrorwire-app --no-default-features --features mirrorwire-app/gui,mirrorwire-app/filmcraft,mirrorwire-app/miracast` (22 + 2 + 31/32, the one failure needs x264); `cargo deny --all-features --locked check advisories bans licenses sources`; `(cd fuzz && cargo check --locked)`; `grep -A2 'name = "craft-' Cargo.lock` (one rev). On the box: `cargo xtask ci`.
@@ -115,6 +125,8 @@ Step 13: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --no
 `git log --oneline 767ed3c..miracast-spike`; `cargo test -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback` (94 tests); `cargo clippy -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback --all-targets -- -D warnings`; `cargo fmt --all --check`; `cargo xtask layers`. `cargo xtask ci` cannot build in the research container (no libpipewire-0.3 dev package), unrelated to the spike.
 
 ## Next step
+Step 16: manager reviews `flatpak-nm` (steps 14 + 16) and merges; on the T480s check the name line and that the tablet shows the name after `hostnamectl` + Wi-Fi toggle; owner decides on the hostname1 Flatpak permission.
+
 Step 14: manager reviews and merges `flatpak-nm` into main (and pushes; CI + Build must go green, the Flatpak job builds the new manifest). Then on the T480s: install the CI Flatpak bundle and try the Miracast-compatible button with the TB336FU; also `flatpak override --user --no-system-talk-name=org.freedesktop.NetworkManager io.github.windwerfer.MirrorWire` once to see the "not available" page with the hint, then restore. Confirm the GNOME Network Displays metadata before a Flathub submission.
 
 Earlier (step 13): Step 13 done: run the full `cargo xtask ci` (default features), `cargo audit`/`cargo deny`, the FilmCraft loopback (`MIRRORWIRE_FEATURES=filmcraft scripts/loopback-test.sh 10 --encoder filmcraft`) and the Android clippy on the build box; if green, merge miracast-spike into main.
@@ -179,6 +191,7 @@ ffprobe -hide_banner stream.h264
 **What a good result looks like:** `sink-trace.log` shows M1..M7 in order, "start media on UDP 19000", rising video AU counts, no `close:` until you disconnect. Also useful: which `wfd_video_formats`/`wfd_audio_codecs` the tablet's M4 picked, and whether it rejected `wfd_audio_codecs: none` (then an LPCM offer is needed: miracast.md section 5).
 
 ## Commit
+Step 16: 07b676d, 67a8567, plus this HANDOFF commit. Not pushed.
 d86f0db Document the craft-libs encoder (D23) and one craft-libs pin
 8a6e5b7 Take the FilmCraft encoder from craft-libs (craft-video h264-encode)
 0fe552d Gate spawn_direct on its only user (test + filmcraft)
