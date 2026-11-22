@@ -520,7 +520,7 @@ mod tests {
         assert!(hint);
         let body = wait_body(view(&joining, &SinkName::Empty, false));
         assert!(body.contains("tap the entry without a name"), "{body}");
-        // Unknown (e.g. Flatpak without hostname1): no line at all, neutral instruction.
+        // Unknown (e.g. hostname1 not reachable): no line at all, neutral instruction.
         assert_eq!(name_line(&SinkName::Unknown), None);
         let body = wait_body(view(&joining, &SinkName::Unknown, false));
         assert!(body.contains("tap this computer"), "{body}");

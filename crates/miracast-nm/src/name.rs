@@ -21,7 +21,7 @@ pub enum SinkName {
     /// Neither a pretty nor a static hostname is set: Android most likely lists this computer
     /// without a name.
     Empty,
-    /// Not known (hostname1 not reachable, e.g. inside the Flatpak, and no other answer):
+    /// Not known (hostname1 not reachable, e.g. no systemd-hostnamed, and no other answer):
     /// show nothing rather than a wrong "none".
     #[default]
     Unknown,

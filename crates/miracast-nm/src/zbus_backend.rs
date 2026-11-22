@@ -342,10 +342,11 @@ const SETTINGS_IFACE: &str = "org.freedesktop.NetworkManager.Settings";
 const NAME_READ_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Best estimate of the name the Android device lists this computer under (D25,
-/// [`crate::name`]): hostname1's `PrettyHostname`, then `StaticHostname`. When hostname1
-/// cannot be reached (the Flatpak has no `org.freedesktop.hostname1` permission), NM's
-/// `Settings.Hostname` through the existing NM permission (D24), which only knows the static
-/// name. Any failure gives [`SinkName::Unknown`].
+/// [`crate::name`]): hostname1's `PrettyHostname`, then `StaticHostname` (the Flatpak has the
+/// `org.freedesktop.hostname1` name). When hostname1 cannot be reached anyway (no
+/// systemd-hostnamed, or the Flatpak name removed by an override), NM's `Settings.Hostname`
+/// through the NM permission (D24), which only knows the static name. Any failure gives
+/// [`SinkName::Unknown`].
 pub async fn sink_name() -> SinkName {
     tokio::time::timeout(NAME_READ_TIMEOUT, read_sink_name())
         .await
