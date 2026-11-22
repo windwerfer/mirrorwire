@@ -9,6 +9,7 @@
 mod error;
 pub mod freq;
 mod mock;
+pub mod name;
 mod nm;
 mod provider;
 mod sink;
@@ -18,6 +19,7 @@ pub mod zbus_backend;
 
 pub use error::P2pError;
 pub use mock::{MockCall, MockP2pProvider};
+pub use name::SinkName;
 pub use nm::{
     group_from_ip4, ActiveState, GroupIp4, MockNm, NmApi, NmP2pProvider, NmPeer, P2pConnectionSpec,
     DEFAULT_GROUP_TIMEOUT,

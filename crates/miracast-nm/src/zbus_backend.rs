@@ -5,6 +5,7 @@
 //! provider polls). Everything NM-independent is tested through [`crate::MockNm`]; the
 //! value parsing here is pure and unit tested.
 
+use crate::name::{self, SinkName};
 use crate::nm::{ActiveState, GroupIp4};
 use crate::{BoxFuture, NmApi, NmPeer, P2pConnectionSpec, P2pError, P2pEvent};
 use std::collections::HashMap;
@@ -330,6 +331,91 @@ impl NmApi for ZbusNm {
         // Stub: PeerAdded/PeerRemoved and state-change signals are not subscribed yet.
         Box::pin(std::future::pending())
     }
+}
+
+/// hostname1 (systemd-hostnamed): its properties are readable without root.
+const HOSTNAME1_DEST: &str = "org.freedesktop.hostname1";
+const HOSTNAME1_PATH: &str = "/org/freedesktop/hostname1";
+const SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
+const SETTINGS_IFACE: &str = "org.freedesktop.NetworkManager.Settings";
+/// The name line is cosmetic: never wait long for it (a bus proxy may not answer at all).
+const NAME_READ_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Best estimate of the name the Android device lists this computer under (D25,
+/// [`crate::name`]): hostname1's `PrettyHostname`, then `StaticHostname`. When hostname1
+/// cannot be reached (the Flatpak has no `org.freedesktop.hostname1` permission), NM's
+/// `Settings.Hostname` through the existing NM permission (D24), which only knows the static
+/// name. Any failure gives [`SinkName::Unknown`].
+pub async fn sink_name() -> SinkName {
+    tokio::time::timeout(NAME_READ_TIMEOUT, read_sink_name())
+        .await
+        .unwrap_or_else(|_| {
+            tracing::debug!("miracast: reading the hostname timed out");
+            SinkName::Unknown
+        })
+}
+
+async fn read_sink_name() -> SinkName {
+    let conn = match zbus::connection::Builder::system()
+        .method_timeout(NAME_READ_TIMEOUT)
+        .build()
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("miracast: no system bus for the hostname: {e}");
+            return SinkName::Unknown;
+        }
+    };
+    let hostname1 = async {
+        let pretty = string_property(
+            &conn,
+            HOSTNAME1_DEST,
+            HOSTNAME1_PATH,
+            HOSTNAME1_DEST,
+            "PrettyHostname",
+        )
+        .await?;
+        let static_name = string_property(
+            &conn,
+            HOSTNAME1_DEST,
+            HOSTNAME1_PATH,
+            HOSTNAME1_DEST,
+            "StaticHostname",
+        )
+        .await?;
+        zbus::Result::Ok((pretty, static_name))
+    };
+    match hostname1.await {
+        Ok((pretty, static_name)) => name::from_hostname1(&pretty, &static_name),
+        Err(e) => {
+            tracing::debug!("miracast: hostname1 not reachable ({e}), asking NetworkManager");
+            match string_property(&conn, NM_DEST, SETTINGS_PATH, SETTINGS_IFACE, "Hostname").await {
+                Ok(h) => name::from_nm_hostname(&h),
+                Err(e) => {
+                    tracing::debug!("miracast: NetworkManager hostname not readable: {e}");
+                    SinkName::Unknown
+                }
+            }
+        }
+    }
+}
+
+async fn string_property(
+    conn: &zbus::Connection,
+    destination: &str,
+    path: &str,
+    interface: &str,
+    property: &str,
+) -> zbus::Result<String> {
+    let proxy: zbus::Proxy<'_> = zbus::proxy::Builder::new(conn)
+        .destination(destination)
+        .path(path)
+        .interface(interface)
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await?;
+    proxy.get_property(property).await
 }
 
 #[cfg(test)]
