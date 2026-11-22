@@ -97,3 +97,25 @@ io.github.windwerfer.MirrorWire`). Everything else keeps working.
 Removing `org.freedesktop.hostname1` the same way (`flatpak override --user
 --no-system-talk-name=org.freedesktop.hostname1 io.github.windwerfer.MirrorWire`) only affects
 the name line: it then falls back to NetworkManager's static hostname, or is hidden.
+
+## Pen pressure: a user override, not a manifest permission
+
+The optional pen pressure on the presenter (D26, off by default) writes to `/dev/uinput`. The
+manifest does **not** ask for it, and must not (AGENTS.md §1.2). Flatpak's device permissions
+are `dri`, `input` (only `/dev/input`), `usb`, `kvm`, `shm` and `all`; none covers
+`/dev/uinput` alone, so a user who wants pen pressure adds the broad one themselves:
+
+```sh
+flatpak override --user --device=all io.github.windwerfer.MirrorWire
+```
+
+plus the host udev rule the app shows (`TAG+="uaccess"` on `/dev/uinput`). The app explains
+that `--device=all` also gives it the other devices (e.g. webcams) and how to undo it:
+
+```sh
+flatpak override --user --reset io.github.windwerfer.MirrorWire   # or: --nodevice=all
+```
+
+For a Flathub review: the shipped app has no device permission beyond `--device=dri`; pen
+pressure is an opt-in the user enables outside the sandbox, and without it the pen works as a
+plain pointer through the RemoteDesktop portal.
