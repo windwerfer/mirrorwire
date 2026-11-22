@@ -105,6 +105,8 @@ impl MirrorApp {
                             h.set_max_size(max);
                         }
                         quality_controls(ui, self, &status.settings);
+                        #[cfg(target_os = "linux")]
+                        super::pen::pen_pressure_ui(ui, self, &status.capture);
                         ui.add_space(8.0);
                         // Diagnostics stay one click away; the essentials above fit a laptop screen.
                         egui::CollapsingHeader::new("Details")

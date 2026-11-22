@@ -23,6 +23,12 @@ pub struct CaptureCtl {
     pub(super) cursor_note: Option<String>,
     /// State of the presenter remote (keyboard permission), for the window.
     pub(super) remote_note: Option<String>,
+    /// Pen input goes to the virtual uinput pen (setting on and the check passed, D26).
+    #[cfg(target_os = "linux")]
+    pub(super) pen_pressure: bool,
+    /// State of the virtual pen, for the window.
+    #[cfg(target_os = "linux")]
+    pub(super) pen_note: Option<String>,
     /// Display size the viewer reported in hello (for the Extend hint).
     pub(super) viewer_display: Option<watch::Receiver<Option<DisplayInfo>>>,
     pub(super) negotiated_fps: Option<u32>,
@@ -44,6 +50,10 @@ impl CaptureCtl {
             active_cursor: CursorCapture::Embedded,
             cursor_note: None,
             remote_note: None,
+            #[cfg(target_os = "linux")]
+            pen_pressure: false,
+            #[cfg(target_os = "linux")]
+            pen_note: None,
             viewer_display: None,
             negotiated_fps: None,
             source_desc: String::new(),
@@ -73,6 +83,10 @@ impl CaptureCtl {
             cursor_mode: self.active_cursor.mode(),
             cursor_note: self.cursor_note.clone(),
             remote_note: self.remote_note.clone(),
+            #[cfg(target_os = "linux")]
+            pen_pressure: self.pen_pressure,
+            #[cfg(target_os = "linux")]
+            pen_note: self.pen_note.clone(),
             viewer_display: self.viewer_display.as_ref().and_then(|rx| *rx.borrow()),
             fps_requested: self.asked_fps,
             fps_negotiated: self.negotiated_fps,
@@ -90,6 +104,11 @@ pub struct CaptureStatus {
     pub cursor_mode: CursorMode,
     pub cursor_note: Option<String>,
     pub remote_note: Option<String>,
+    /// Pen input uses the virtual uinput pen with pressure (D26).
+    #[cfg(target_os = "linux")]
+    pub pen_pressure: bool,
+    #[cfg(target_os = "linux")]
+    pub pen_note: Option<String>,
     /// The viewer's display size, once it has connected.
     pub viewer_display: Option<DisplayInfo>,
     pub fps_requested: u32,
