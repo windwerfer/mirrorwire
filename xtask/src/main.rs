@@ -10,6 +10,11 @@ use std::process::{Command, ExitCode};
 /// Allowed `mirrorwire-*` path dependencies per crate (architecture.md section 1).
 /// Lower layers never depend on higher ones.
 const LAYERS: &[(&str, &[&str])] = &[
+    // Miracast spike crates (docs/agents/miracast.md section 7): standalone, platform-agnostic.
+    ("miracast-nm", &[]),
+    ("miracast-rtsp", &[]),
+    ("miracast-rtp", &[]),
+    ("miracast-loopback", &[]),
     ("mirrorwire-proto", &[]),
     ("mirrorwire-film", &[]),
     ("mirrorwire-media", &["mirrorwire-proto", "mirrorwire-film"]),

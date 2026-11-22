@@ -50,12 +50,12 @@ dependencies = [
 [[package]]
 name = "craft-media"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=09dcbc225b95232998498a40ca56e24716571d53#09dcbc225b95232998498a40ca56e24716571d53"
+source = "git+https://github.com/storytold/craft-libs?rev=068e079c7be4b100a8a6b305b31ac881e069727e#068e079c7be4b100a8a6b305b31ac881e069727e"
 
 [[package]]
 name = "craft-video"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=09dcbc225b95232998498a40ca56e24716571d53#09dcbc225b95232998498a40ca56e24716571d53"
+source = "git+https://github.com/storytold/craft-libs?rev=068e079c7be4b100a8a6b305b31ac881e069727e#068e079c7be4b100a8a6b305b31ac881e069727e"
 dependencies = [
  "craft-media",
  "thiserror",

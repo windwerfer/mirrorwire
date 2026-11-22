@@ -66,11 +66,9 @@ allow-wildcard-paths = true
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# Optional `filmcraft` feature (decision log 2026-11): the pure-Rust H.264
-# encoder is not on crates.io. Cargo.toml pins it to a commit `rev`, and it
-# pulls craft-media from craft-libs at a pinned rev; the viewers use craft-video (FilmCraft H.264
-# decoder, decision log 2026-11-15) from the same craft-libs commit. Nothing else from git.
+# FilmCraft's pure-Rust H.264 decoder (viewers, decision log 2026-11-15) and encoder (optional
+# `filmcraft` feature, D23) are craft-video from craft-libs, not on crates.io. Both Cargo.toml
+# entries pin the same commit `rev`. Nothing else from git.
 allow-git = [
-  "https://github.com/storytold/filmcraft",
   "https://github.com/storytold/craft-libs",
 ]

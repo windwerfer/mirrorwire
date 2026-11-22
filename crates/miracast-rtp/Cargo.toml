@@ -1,0 +1,13 @@
+[package]
+name = "miracast-rtp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Miracast RTP receive, MPEG-TS demux and H.264 access units (spike)."
+
+[lints]
+workspace = true
+
+[dependencies]

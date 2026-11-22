@@ -11,13 +11,16 @@ name = "mirrorwire"
 path = "src/main.rs"
 
 [features]
-default = ["gui", "portal", "ffmpeg"]
+# `miracast` only has an effect on Linux (its crates are Linux-only target dependencies).
+default = ["gui", "portal", "ffmpeg", "miracast"]
 # FFmpeg-backed encode/decode (off: pure-Rust build, FilmCraft only; needs `filmcraft`).
 ffmpeg = ["mirrorwire-media/ffmpeg"]
 gui = ["dep:eframe"]
 portal = ["mirrorwire-media/portal"]
 filmcraft = ["mirrorwire-media/filmcraft"]
 static-ffmpeg = ["mirrorwire-media/static-ffmpeg"]
+# Receive a Miracast-compatible Android screen in the viewer (docs/agents/miracast.md, D21/D22).
+miracast = ["dep:miracast-loopback", "dep:miracast-nm", "dep:miracast-rtp"]
 
 [lints]
 workspace = true
@@ -36,3 +39,10 @@ mirrorwire-media = { path = "../mirrorwire-media", default-features = false }
 mirrorwire-net = { path = "../mirrorwire-net" }
 eframe = { version = "0.37", optional = true, default-features = false, features = ["glow", "wgpu", "default_fonts", "wayland", "x11", "clipboard"] }
 dirs = "7"
+
+# Linux only (NetworkManager Wi-Fi Direct): this workspace's spike crates, no new third-party
+# dependency, pulled in by feature `miracast`.
+[target.'cfg(target_os = "linux")'.dependencies]
+miracast-loopback = { path = "../miracast-loopback", optional = true }
+miracast-nm = { path = "../miracast-nm", optional = true }
+miracast-rtp = { path = "../miracast-rtp", optional = true }

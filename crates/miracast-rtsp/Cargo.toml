@@ -1,0 +1,13 @@
+[package]
+name = "miracast-rtsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Miracast (Wi-Fi Display) sink-side RTSP M1-M7 state machine, sans-IO (spike)."
+
+[lints]
+workspace = true
+
+[dependencies]

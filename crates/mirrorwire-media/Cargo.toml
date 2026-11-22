@@ -14,7 +14,7 @@ ffmpeg = ["dep:ffmpeg-next"]
 portal = ["dep:ashpd", "dep:pipewire"]
 static-ffmpeg = ["ffmpeg", "ffmpeg-next/static"]
 # Pure-Rust FilmCraft H.264 encoder as an optional presenter backend (`--encoder filmcraft`).
-filmcraft = ["dep:filmcraft-h264enc"]
+filmcraft = ["dep:craft-video"]
 
 [lints]
 workspace = true
@@ -29,9 +29,10 @@ mirrorwire-proto = { path = "../mirrorwire-proto" }
 # FilmCraft's pure-Rust H.264 decoder: the software decoder on Linux and Windows (decision log
 # 2026-11-15). The craft-video pin lives in mirrorwire-film.
 mirrorwire-film = { path = "../mirrorwire-film" }
-# Not on crates.io; pinned to a reviewed commit (deny.toml allows only this git source
-# and craft-libs, which it depends on).
-filmcraft-h264enc = { git = "https://github.com/storytold/filmcraft", rev = "cb9783ba1a2b658ba2adc7cb131226d156bb2356", optional = true }
+# FilmCraft's pure-Rust H.264 encoder, now in craft-libs (`craft-video`, feature `h264-encode`,
+# decision D23). Not on crates.io; same craft-libs rev as mirrorwire-film so the workspace
+# builds one copy (docs/agents/filmcraft.md).
+craft-video = { git = "https://github.com/storytold/craft-libs", rev = "068e079c7be4b100a8a6b305b31ac881e069727e", default-features = false, features = ["h264-encode", "threads"], optional = true }
 
 # tokio: the FrameSource remote-input channel (all platforms), fs for portal tokens (Linux).
 tokio = { workspace = true, features = ["fs"] }

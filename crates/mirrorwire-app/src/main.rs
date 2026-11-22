@@ -3,6 +3,10 @@ mod applog;
 mod capture_prefs;
 #[cfg(feature = "gui")]
 mod gui;
+#[cfg(all(feature = "miracast", target_os = "linux"))]
+mod miracast;
+#[cfg(all(feature = "miracast", target_os = "linux"))]
+mod miracast_flow;
 mod presenter;
 mod session;
 mod sync;
@@ -112,6 +116,14 @@ pub struct ViewArgs {
     /// Name shown to the presenter.
     #[arg(long)]
     pub name: Option<String>,
+    /// Show an Android device that casts with "Wireless display"/Cast (Miracast-compatible)
+    /// instead of a MirrorWire presenter: joins it over Wi-Fi Direct through NetworkManager.
+    /// Linux builds with the `miracast` feature (default on Linux).
+    #[arg(long, conflicts_with_all = ["uri", "headless"])]
+    pub miracast: bool,
+    /// With --miracast: only sources whose Wi-Fi Direct name contains this.
+    #[arg(long, requires = "miracast")]
+    pub miracast_peer: Option<String>,
 }
 
 impl Default for ViewArgs {
@@ -127,6 +139,8 @@ impl Default for ViewArgs {
             simulate_burst: 1.0,
             simulate_bandwidth: 0.0,
             name: None,
+            miracast: false,
+            miracast_peer: None,
         }
     }
 }
@@ -182,6 +196,11 @@ fn main() -> Result<()> {
             presenter::run(args, &config_dir)
         }
         Some(Command::View(args)) if args.headless => viewer::run_headless(args, &config_dir),
+        Some(Command::View(args))
+            if args.miracast && !cfg!(all(feature = "miracast", target_os = "linux")) =>
+        {
+            anyhow::bail!("this build cannot receive Miracast-compatible streams (cargo feature `miracast`, Linux)")
+        }
         Some(Command::View(args)) => run_gui(
             GuiLaunch::View,
             args,

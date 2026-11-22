@@ -1,0 +1,23 @@
+[package]
+name = "miracast-nm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Rootless Wi-Fi Direct (P2P) provider for Miracast: trait, mock and NetworkManager D-Bus backend (spike)."
+
+[lints]
+workspace = true
+
+[dependencies]
+tracing.workspace = true
+
+# Linux-only: NetworkManager is on the system bus. Same feature set as mirrorwire-net.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "6", default-features = false, features = ["tokio", "proxy", "tracing"] }
+# Already in the tree through zbus's tokio feature; used only for the poll sleep.
+tokio.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

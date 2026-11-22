@@ -1,0 +1,18 @@
+[package]
+name = "miracast-loopback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Loopback end-to-end test of the Miracast sink (RTSP M1-M7 + RTP/TS) with a minimal test source (spike)."
+
+[lints]
+workspace = true
+
+[dependencies]
+miracast-rtsp = { path = "../miracast-rtsp" }
+miracast-rtp = { path = "../miracast-rtp" }
+miracast-nm = { path = "../miracast-nm" }
+# Runs the async miracast-nm calls in miracast-sink-demo --nm (already a workspace dependency).
+tokio.workspace = true

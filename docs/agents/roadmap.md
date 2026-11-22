@@ -331,7 +331,11 @@ target), **planned**, **idea**. Update this file when an item moves.
 - **GitHub Releases** for stable download links (release job exists for `v*` tags, never run;
   the owner decides when to tag).
 - Flathub (vendored cargo sources), notarized Mac builds (needs a paid Apple account).
-- Miracast sink as a second `VideoSink`. See also the parked "Miracast support" entry below.
+- Miracast sink in the viewer: **built** (spike, 2026-11-21, app feature `miracast`,
+  `mirrorwire view --miracast`): a Miracast source arrives as a second producer of the
+  viewer's `ViewerHandle`; hardware run 6 showed the TB336FU at ~30 fps 1080p through
+  FilmCraft. Open: default build (VAAPI) on the owner's box, a home-screen entry, a cancellable
+  NM join. See also the "Miracast support" entry below and [miracast.md](miracast.md) §13.
 - **Miracast support (Wi-Fi Display, optional MS-MICE)** — status: idea/parked, owner decides.
   Goal: an Android tablet/phone mirrors to the Linux laptop via Miracast (tablet = source,
   laptop = sink), optionally the reverse, as a clean reusable Rust crate.
@@ -351,6 +355,11 @@ target), **planned**, **idea**. Update this file when an item moves.
     receive path, hardware validation with the owner.
   - Open check: whether the TB336FU still offers a Miracast source ("Cast"/"Wireless
     display"); stock Android dropped it, only some vendors ship it.
+  - **TODO (status: idea/optional):** Optional root prompt (explicit user click, never
+    automatic) to choose the P2P/Wi-Fi channel so that the group channel matches the STA
+    channel. Possibly behind statistics that detect frequent disconnects and attribute them to
+    a channel mismatch (group freq != STA freq) before offering it. Needs the owner's OK
+    (AGENTS.md §1.1 / §5: any privilege). Background: [miracast.md](miracast.md) §12.
 - **AirPlay receiver (audio + video + screen mirroring)** — status: idea/parked, owner decides
   (owner 2026-11-21). **DO NOT START.**
   Goal: MirrorWire as an AirPlay receiver; a reusable crate; MIT/Apache where possible.

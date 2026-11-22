@@ -1,4 +1,4 @@
-//! Optional pure-Rust H.264 encoder (FilmCraft `filmcraft-h264enc`, feature
+//! Optional pure-Rust H.264 encoder (FilmCraft's, `craft_video::h264` from craft-libs, feature
 //! `filmcraft`), for comparison with the FFmpeg backends.
 //!
 //! Input is a CPU I420 picture made by the pure-Rust converter (`convert.rs`) from the
@@ -13,7 +13,7 @@ use crate::encode::{path, EncoderConfig, RateControl};
 use crate::frame::{EncodedFrame, RawFrame};
 use anyhow::{bail, Result};
 use bytes::Bytes;
-use filmcraft_h264enc as fc;
+use craft_video::h264 as fc;
 use mirrorwire_proto::clock::now_us;
 
 pub const NAME: &str = "filmcraft-h264enc";
