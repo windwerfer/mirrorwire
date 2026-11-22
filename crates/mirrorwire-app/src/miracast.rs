@@ -16,6 +16,7 @@ use crate::viewer::{DisplayFrame, Picture, Totals, ViewerHandle, ViewerStatus};
 use anyhow::Result;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use miracast_loopback::{run_sink_logged, RunOptions, SinkEvent, SinkReport};
+use miracast_nm::SinkName;
 use miracast_rtp::h264::{find_sps, Sps};
 use miracast_rtp::{AudioFrame, MediaSink, VideoAccessUnit};
 use mirrorwire_media::decode::{self, HwDecode, RgbaConverter, SoftwareDecoder, VideoDecoder};
@@ -54,11 +55,18 @@ pub struct MiracastSession {
     /// Receives `()` once the session thread has finished, including leaving the Wi-Fi Direct
     /// group and removing our NetworkManager profile.
     pub finished: Receiver<()>,
+    /// The name the Android device most likely shows for this computer (D25); `Unknown` until
+    /// read (or when it cannot be read).
+    pub sink_name: Arc<Mutex<SinkName>>,
 }
 
 impl MiracastSession {
     pub fn phase(&self) -> Phase {
         self.phase.lock_ok().clone()
+    }
+
+    pub fn sink_name(&self) -> SinkName {
+        self.sink_name.lock_ok().clone()
     }
 }
 
@@ -70,8 +78,20 @@ pub fn spawn(
     opts: MiracastOptions,
     on_frame: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> (ViewerHandle, MiracastSession) {
-    let runtime = runtime.clone();
-    start(opts, on_frame, move |ctx| session_nm(&runtime, ctx))
+    let repaint = on_frame.clone();
+    let session_runtime = runtime.clone();
+    let (viewer, session) = start(opts, on_frame, move |ctx| session_nm(&session_runtime, ctx));
+    // Read on its own task: it is cosmetic and must not delay discovery.
+    let name = session.sink_name.clone();
+    runtime.spawn(async move {
+        let read = miracast_nm::zbus_backend::sink_name().await;
+        tracing::info!("miracast: name shown on Android (estimate from the hostname): {read:?}");
+        *name.lock_ok() = read;
+        if let Some(repaint) = repaint {
+            repaint();
+        }
+    });
+    (viewer, session)
 }
 
 /// Like [`spawn`] but without Wi-Fi Direct: the source's RTSP server is already reachable at
@@ -162,7 +182,11 @@ fn start(
             stop,
             done,
         },
-        MiracastSession { phase, finished },
+        MiracastSession {
+            phase,
+            finished,
+            sink_name: Arc::new(Mutex::new(SinkName::Unknown)),
+        },
     )
 }
 
@@ -622,7 +646,7 @@ mod tests {
         assert!(s.connected && s.first_frame);
         assert_eq!(session.phase(), Phase::Streaming { warning: None });
         assert_eq!(
-            crate::miracast_flow::view(&session.phase(), "t480s", true),
+            crate::miracast_flow::view(&session.phase(), &session.sink_name(), true),
             crate::miracast_flow::View::Video
         );
         handle.stop();

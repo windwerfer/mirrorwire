@@ -583,7 +583,7 @@ Start screen: large "Presenter", small "Viewer", "View your Android device
 | phase | from | shown |
 |---|---|---|
 | Starting / Searching | button, `FlowEvent::Discovering` | "On your Android device open Settings > Cast (Wireless display) and turn wireless display on" + spinner + Cancel |
-| Joining {peer, attempt} | `SourceFound`, `AttemptFailed` | "On <peer>, tap "<this computer's name>" (may be listed as "Wireless display"); if it asks to connect, choose Cancel and tap it in the list", plus "try n of 3" |
+| Joining {peer, attempt} | `SourceFound`, `AttemptFailed` | "On <peer>, tap "<name shown on Android>" (or "the entry without a name" / "this computer", §16; may be listed as "Wireless display"); if it asks to connect, choose Cancel and tap it in the list", plus "try n of 3" |
 | Connecting | `Joined` | "Connected to <peer>. Starting the stream…" |
 | Streaming {warning} | `SinkEvent::MediaStarted`, `NoRtp`, `Stalled` | the normal video view once a picture exists; before that the firewall text (port, zone, `firewall-cmd` with a Copy button) |
 | Failed(issue) / Ended | join error, `SinkReport` | result page with Try again / Back: no device found, group did not form, "did not start casting" (tap hint), "Video stopped" (link lost), casting stopped on the device |
@@ -645,3 +645,42 @@ io.github.windwerfer.MirrorWire` command; no Wi-Fi P2P device -> the same page w
 wpa_supplicant hint; Polkit refusal (`NotAuthorized`, `AccessDenied` or NM's
 `org.freedesktop.NetworkManager.PermissionDenied`) -> "Receiving from Android was not allowed",
 no retry. Flathub justification text: `packaging/flatpak/README.md`.
+
+## 16. Name shown on Android (D25, step 16, 2026-11-22)
+
+Problem: on the T480s, Android listed the laptop with a blank name. On that host hostname1's
+`StaticHostname` and `PrettyHostname` were both `""`; only the transient `Hostname`
+(`fedora.fritz.box`, from DHCP) was set. The Wi-Fi Direct device name is set by the system
+(NetworkManager / wpa_supplicant), not by MirrorWire.
+
+Sources checked (official docs only, read 2026-11-22, D20):
+
+| source | result |
+|---|---|
+| NM `org.freedesktop.NetworkManager.Device.WifiP2P` | properties `HwAddress` (deprecated), `Peers`; methods `StartFind`, `StopFind`. **No device-name property.** |
+| NM `wifi-p2p` setting | `peer`, `wfd-ies`, `wps-method`. **No device-name setting.** |
+| NM `org.freedesktop.NetworkManager.Settings.Hostname` | "The machine hostname stored in persistent configuration" (the static hostname), readable through the Flatpak's existing NM name (D24). |
+| NM docs (above pages, NetworkManager.conf) | say nothing about where the P2P device name comes from. |
+| wpa_supplicant `fi.w1.wpa_supplicant1.Interface.P2PDevice` `P2PDeviceConfig` `DeviceName` (s) | the actual value, but undocumented beyond the type, and the wpa_supplicant D-Bus API is access-denied for unprivileged users (§12). |
+| systemd `org.freedesktop.hostname1` | `Hostname` (transient, never empty), `StaticHostname` (`/etc/hostname`, `""` if unset), `PrettyHostname` (`/etc/machine-info`, `""` if unset); readable without root (busctl from the container, 2026-11-22), changes go through Polkit. |
+
+Decision (D25): MirrorWire shows a **best estimate**, not the advertised value: hostname1
+`PrettyHostname`, else `StaticHostname`, else "none" (`miracast_nm::name`,
+`zbus_backend::sink_name`). When hostname1 cannot be reached (the Flatpak has no
+`org.freedesktop.hostname1` name), the fallback is NM `Settings.Hostname`: a non-empty value is
+shown, an empty one says nothing about the pretty name, so the line is hidden (`Unknown`)
+rather than showing a possibly wrong "none". Every read is bounded to 3 s and runs on its own
+task, so it never delays discovery; names are trimmed, stripped of control characters and
+capped at 64 characters. The transient hostname is not used (on the T480s it was set while
+Android showed no name). Nobody has confirmed that the P2P name follows the pretty name
+rather than the static one; `hostnamectl hostname --pretty` plus `--static` sets both.
+
+GUI (`Screen::Miracast`, every page except the video): "Name shown on Android: <name>"; with
+no name "Name shown on Android: none ℹ"; clicking or tapping the line opens a short
+explanation with `hostnamectl hostname --pretty "My Laptop"`, `hostnamectl hostname --static
+my-laptop`, then turn Wi-Fi off and on. The tap instruction uses the same estimate ("tap
+"<name>"", "tap the entry without a name", or "tap this computer" when unknown) instead of
+MirrorWire's own viewer name. Live read in the container against the host bus (2026-11-22):
+hostname1 `""`/`""`, NM `Settings.Hostname` `""` -> `Empty`. Not run in a GUI, not in an
+installed Flatpak, and not checked on the tablet that a newly set name shows up after the
+Wi-Fi toggle.

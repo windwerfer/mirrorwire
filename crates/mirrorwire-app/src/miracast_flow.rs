@@ -10,7 +10,7 @@
 
 use miracast_loopback::nm_flow::FlowEvent;
 use miracast_loopback::{SinkEvent, SinkReport};
-use miracast_nm::P2pError;
+use miracast_nm::{P2pError, SinkName};
 use miracast_rtp::diag::NoRtp;
 
 /// Where the Miracast flow is.
@@ -143,9 +143,10 @@ pub enum View {
     Done { title: String, body: String },
 }
 
-/// The screen for `phase`; `device` is this computer's name, `has_picture` whether a decoded
-/// picture exists.
-pub fn view(phase: &Phase, device: &str, has_picture: bool) -> View {
+/// The screen for `phase`; `device` is the name the Android device most likely lists this
+/// computer under (D25), `has_picture` whether a decoded picture exists.
+pub fn view(phase: &Phase, device: &SinkName, has_picture: bool) -> View {
+    let device = &tap_target(device);
     let wait = |title: &str, body: String| View::Wait {
         title: title.into(),
         body,
@@ -159,7 +160,7 @@ pub fn view(phase: &Phase, device: &str, has_picture: bool) -> View {
         ),
         Phase::Joining { peer, attempt } => {
             let mut body = format!(
-                "On {peer}, tap \"{device}\" in the Cast list (it may be listed as \
+                "On {peer}, tap {device} in the Cast list (it may be listed as \
                  \"Wireless display\").\n\nIf {peer} asks whether to connect, choose Cancel \
                  and tap it in the list instead."
             );
@@ -211,7 +212,7 @@ fn title(issue: &Issue) -> &'static str {
 }
 
 /// The plain-language explanation of `issue`.
-pub fn message(issue: &Issue, device: &str) -> String {
+fn message(issue: &Issue, device: &str) -> String {
     match issue {
         Issue::NotAvailable(m) => not_available(m, in_flatpak()),
         Issue::NotAllowed(m) => format!(
@@ -224,11 +225,11 @@ pub fn message(issue: &Issue, device: &str) -> String {
             .into(),
         Issue::GroupFailed(m) => format!(
             "The Wi-Fi Direct connection to your Android device did not form. Try again; tap \
-             \"{device}\" in the Cast list when it appears. ({m})"
+             {device} in the Cast list when it appears. ({m})"
         ),
         Issue::SourceNeverStarted => format!(
             "Your Android device joined, but it did not start casting. On the device, open \
-             Cast and tap \"{device}\" in the list; answering its \"connect\" question alone \
+             Cast and tap {device} in the list; answering its \"connect\" question alone \
              is not enough."
         ),
         Issue::NoRtp(d) => {
@@ -250,6 +251,35 @@ pub fn message(issue: &Issue, device: &str) -> String {
         Issue::Other(reason) => format!("The stream ended: {reason}."),
     }
 }
+
+/// How the instructions name this computer in the Android Cast list.
+fn tap_target(name: &SinkName) -> String {
+    match name {
+        SinkName::Named(n) => format!("\"{n}\""),
+        SinkName::Empty => "the entry without a name".into(),
+        SinkName::Unknown => "this computer".into(),
+    }
+}
+
+/// The "Name shown on Android" line of the Miracast screen (D25); `None` when the name is
+/// not known (show nothing rather than a wrong "none"). The bool says whether the name is
+/// missing, so the GUI adds the ℹ explanation ([`NAME_HELP`]).
+pub fn name_line(name: &SinkName) -> Option<(String, bool)> {
+    match name {
+        SinkName::Named(n) => Some((format!("Name shown on Android: {n}"), false)),
+        SinkName::Empty => Some(("Name shown on Android: none".into(), true)),
+        SinkName::Unknown => None,
+    }
+}
+
+/// Why the name is empty and how to set it (behind the ℹ of [`name_line`]). "Most likely":
+/// the name comes from the system, and its link to the hostname is a best estimate (D25).
+pub const NAME_HELP: &str = "Android lists this computer under its Wi-Fi Direct name. \
+     The system sets that name, not MirrorWire, most likely from the computer's hostname, and \
+     no hostname is set here. To set one, run in a terminal (it may ask for your password):\n\n\
+     hostnamectl hostname --pretty \"My Laptop\"\n\
+     hostnamectl hostname --static my-laptop\n\n\
+     Then turn Wi-Fi off and on so the new name is used.";
 
 /// Text for [`Issue::NotAvailable`]. In the Flatpak, NM is reachable through the manifest's
 /// `--system-talk-name=org.freedesktop.NetworkManager` (D24); a user who removed it with an
@@ -281,7 +311,9 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::time::Duration;
 
-    const DEV: &str = "t480s";
+    fn dev() -> SinkName {
+        SinkName::Named("t480s".into())
+    }
 
     fn group() -> GroupInfo {
         GroupInfo {
@@ -318,7 +350,7 @@ mod tests {
     #[test]
     fn happy_path_from_button_to_video() {
         let p = Phase::Starting;
-        assert!(wait_body(view(&p, DEV, false)).contains("turn wireless display on"));
+        assert!(wait_body(view(&p, &dev(), false)).contains("turn wireless display on"));
         let p = p.on_flow(&FlowEvent::Discovering);
         assert_eq!(p, Phase::Searching);
         let p = p.on_flow(&FlowEvent::SourceFound {
@@ -326,7 +358,7 @@ mod tests {
             hw_address: "7A:1B:85:73:E1:76".into(),
             rtsp_port: 7236,
         });
-        let body = wait_body(view(&p, DEV, false));
+        let body = wait_body(view(&p, &dev(), false));
         assert!(body.contains("tap \"t480s\""), "{body}");
         assert!(body.contains("choose Cancel"), "{body}");
         let p = p.on_flow(&FlowEvent::AttemptFailed {
@@ -341,7 +373,7 @@ mod tests {
                 attempt: 2
             }
         );
-        assert!(wait_body(view(&p, DEV, false)).contains("try 2 of 3"));
+        assert!(wait_body(view(&p, &dev(), false)).contains("try 2 of 3"));
         let p = p.on_flow(&FlowEvent::Joined(group()));
         assert_eq!(
             p,
@@ -352,8 +384,8 @@ mod tests {
         let p = p.on_sink(&SinkEvent::Connected("192.168.49.1:7236".parse().unwrap()));
         assert!(matches!(p, Phase::Connecting { .. }));
         let p = p.on_sink(&SinkEvent::MediaStarted { rtp_port: 19000 });
-        assert!(matches!(view(&p, DEV, false), View::Wait { .. }));
-        assert_eq!(view(&p, DEV, true), View::Video);
+        assert!(matches!(view(&p, &dev(), false), View::Wait { .. }));
+        assert_eq!(view(&p, &dev(), true), View::Video);
         assert!(p.is_active());
     }
 
@@ -364,7 +396,7 @@ mod tests {
             p.is_active(),
             "the session stays up: the user may open the port"
         );
-        let body = wait_body(view(&p, DEV, false));
+        let body = wait_body(view(&p, &dev(), false));
         assert!(body.contains("UDP port 19000"), "{body}");
         assert!(
             body.contains("most likely in firewalld zone \"public\""),
@@ -375,7 +407,7 @@ mod tests {
             "{body}"
         );
         // Once video arrives it is shown.
-        assert_eq!(view(&p, DEV, true), View::Video);
+        assert_eq!(view(&p, &dev(), true), View::Video);
     }
 
     #[test]
@@ -386,7 +418,7 @@ mod tests {
         };
         let p = Phase::Connecting { peer: "A".into() }.on_end(&report, false);
         assert_eq!(p, Phase::Failed(Issue::SourceNeverStarted));
-        let (title, body) = done(view(&p, DEV, false));
+        let (title, body) = done(view(&p, &dev(), false));
         assert!(title.contains("did not start casting"));
         assert!(body.contains("tap \"t480s\""), "{body}");
         assert!(!p.is_active());
@@ -413,7 +445,7 @@ mod tests {
         };
         let p = stalled.on_end(&report, false);
         assert_eq!(p, Phase::Failed(Issue::VideoStopped));
-        let (title, body) = done(view(&p, DEV, true));
+        let (title, body) = done(view(&p, &dev(), true));
         assert_eq!(title, "Video stopped");
         assert!(body.contains("connection to your Android device was lost"));
     }
@@ -437,7 +469,7 @@ mod tests {
             close_reason: Some("the source stopped talking (RTSP keepalive timeout)".into()),
             ..SinkReport::default()
         };
-        let (_, body) = done(view(&p.on_end(&other, false), DEV, false));
+        let (_, body) = done(view(&p.on_end(&other, false), &dev(), false));
         assert!(body.contains("keepalive timeout"));
     }
 
@@ -459,16 +491,53 @@ mod tests {
         let denied = P2pError::PermissionDenied("polkit".into());
         let p = Phase::Starting.on_join_error(&denied);
         assert!(matches!(p, Phase::Failed(Issue::NotAllowed(_))));
-        let (title, body) = done(view(&p, DEV, false));
+        let (title, body) = done(view(&p, &dev(), false));
         assert!(title.contains("not allowed"));
         assert!(body.contains("polkit") && body.contains("refused"));
         let missing = P2pError::NotAvailable("no NM".into());
         let p = Phase::Starting.on_join_error(&missing);
         assert!(matches!(p, Phase::Failed(Issue::NotAvailable(_))));
-        assert!(done(view(&p, DEV, false)).1.contains("no NM"));
-        assert!(done(view(&Phase::Failed(Issue::NoSource), DEV, false))
+        assert!(done(view(&p, &dev(), false)).1.contains("no NM"));
+        assert!(done(view(&Phase::Failed(Issue::NoSource), &dev(), false))
             .1
             .contains("wireless display on"));
+    }
+
+    #[test]
+    fn name_line_and_tap_text_follow_the_sink_name() {
+        let joining = Phase::Joining {
+            peer: "A".into(),
+            attempt: 1,
+        };
+        // Known name: shown, no hint, and the instruction uses it.
+        assert_eq!(
+            name_line(&dev()),
+            Some(("Name shown on Android: t480s".into(), false))
+        );
+        // Empty (the T480s case): "none" with the hint, and the blank entry is described.
+        let (line, hint) = name_line(&SinkName::Empty).unwrap();
+        assert_eq!(line, "Name shown on Android: none");
+        assert!(hint);
+        let body = wait_body(view(&joining, &SinkName::Empty, false));
+        assert!(body.contains("tap the entry without a name"), "{body}");
+        // Unknown (e.g. Flatpak without hostname1): no line at all, neutral instruction.
+        assert_eq!(name_line(&SinkName::Unknown), None);
+        let body = wait_body(view(&joining, &SinkName::Unknown, false));
+        assert!(body.contains("tap this computer"), "{body}");
+        let (_, body) = done(view(
+            &Phase::Failed(Issue::SourceNeverStarted),
+            &SinkName::Empty,
+            false,
+        ));
+        assert!(body.contains("tap the entry without a name"), "{body}");
+    }
+
+    #[test]
+    fn name_help_gives_the_hostnamectl_commands() {
+        assert!(NAME_HELP.contains("hostnamectl hostname --pretty \"My Laptop\""));
+        assert!(NAME_HELP.contains("hostnamectl hostname --static my-laptop"));
+        assert!(NAME_HELP.contains("Wi-Fi off and on"));
+        assert!(NAME_HELP.contains("most likely"));
     }
 
     #[test]

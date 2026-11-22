@@ -191,6 +191,7 @@ pub fn run(
                     cursor_rate: (Instant::now(), 0, 0.0),
                     miracast: None,
                     miracast_session: None,
+                    miracast_name_help: false,
                 };
                 if let Some(target) = initial {
                     app.screen = Screen::View;
@@ -286,6 +287,9 @@ struct MirrorApp {
     /// cleanup.
     #[cfg_attr(not(all(feature = "miracast", target_os = "linux")), allow(dead_code))]
     miracast_session: Option<MiracastState>,
+    /// The ℹ explanation under "Name shown on Android: none" is open (D25).
+    #[cfg_attr(not(all(feature = "miracast", target_os = "linux")), allow(dead_code))]
+    miracast_name_help: bool,
 }
 
 impl MirrorApp {
@@ -335,6 +339,7 @@ impl MirrorApp {
         self.cursor_tex = None;
         self.last_target = None;
         self.miracast = Some(peer.clone());
+        self.miracast_name_help = false;
         let (viewer, session) = crate::miracast::spawn(
             &self.runtime,
             crate::miracast::MiracastOptions {

@@ -161,7 +161,8 @@ can see whether firewalld runs and, only after you click **Open port for me…**
 to open the UDP port; that click shows one password dialog), and
 `--system-talk-name=org.freedesktop.NetworkManager` (Wi-Fi Direct for **View your Android
 device (Miracast-compatible)**: find the device, create a temporary connection, remove it
-again; NetworkManager's own Polkit rules apply).
+again, and read the hostname to show the name Android lists; NetworkManager's own Polkit
+rules apply).
 There is no host filesystem access. Screen capture goes through the
 ScreenCast portal, which needs no extra permission. Settings live in
 `~/.var/app/io.github.windwerfer.MirrorWire/config/mirrorwire`.
@@ -346,7 +347,7 @@ when the portal only sent 6.8 fps, because PTS advanced by 1/60 s per frame.
 | Flatpak, AppImage, macOS .app / DMG builds | built in CI; Flatpak presenter and Intel DMG viewer start on the real machines |
 | camera QR scanning | Linux desktop viewer: "Scan QR with camera" button (portal + PipeWire); not yet run on a real camera |
 | Android viewer (APK) | built: arm64-v8a, Android 8+, MediaCodec decode (hardware first). First phone test froze after one picture; fixed, emulator-tested, device retest pending |
-| Android screen in the viewer (Miracast-compatible) | Start screen button "View your Android device (Miracast-compatible)" (or `mirrorwire view --miracast [--miracast-peer NAME]`); on by default in Linux builds (feature `miracast`). Supports the Miracast™ protocol (not Wi-Fi Alliance certified). Miracast is a trademark of Wi-Fi Alliance. (Linux, NetworkManager Wi-Fi Direct, no root). An Android "Wireless display"/Cast source shows in the normal video view, decoded by the app's decoder at the size from the stream's SPS. Localhost end-to-end test with real H.264 (FilmCraft) passes; the T480s + TB336FU sink path is hardware-tested in the demo binary; details in [docs/agents/miracast.md](docs/agents/miracast.md) |
+| Android screen in the viewer (Miracast-compatible) | Start screen button "View your Android device (Miracast-compatible)" (or `mirrorwire view --miracast [--miracast-peer NAME]`); on by default in Linux builds (feature `miracast`). Supports the Miracast™ protocol (not Wi-Fi Alliance certified). Miracast is a trademark of Wi-Fi Alliance. (Linux, NetworkManager Wi-Fi Direct, no root). An Android "Wireless display"/Cast source shows in the normal video view, decoded by the app's decoder at the size from the stream's SPS. The screen shows the name Android most likely lists for this computer (estimated from the hostname); when none is set, an ℹ explains how to set one with `hostnamectl`. Localhost end-to-end test with real H.264 (FilmCraft) passes; the T480s + TB336FU sink path is hardware-tested in the demo binary; details in [docs/agents/miracast.md](docs/agents/miracast.md) |
 | Android presenter | later (MediaProjection) |
 | Browser viewer (WebAssembly) | planned (WebTransport + WebCodecs); details in [docs/agents/roadmap.md](docs/agents/roadmap.md) |
 | Phone/tablet as input device (remote, pointer, drawing, touchpad, pen tablet) | idea, parked until mirroring is solid and a UI sketch arrives; see [docs/agents/roadmap.md](docs/agents/roadmap.md#future-phonetablet-as-input-device) |

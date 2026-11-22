@@ -41,6 +41,8 @@ Text for the Flathub submission (reviewers ask for a reason for every system-bus
 > - `IP4Config` `AddressData` / `Gateway` to reach the device's stream server;
 > - read-only `Device.Wireless.ActiveAccessPoint` and `AccessPoint.Frequency`, shown next to a
 >   session as a diagnostic (Wi-Fi Direct shares the radio with the station link).
+> - read-only `Settings.Hostname`, to show which name the Android device most likely lists this
+>   computer under (hostname1 is not reachable from the sandbox).
 >
 > Nothing runs at startup: NetworkManager is contacted only after the user clicks "View your
 > Android device (Miracast-compatible)". NetworkManager's Polkit rules still decide each call
