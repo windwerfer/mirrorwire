@@ -45,7 +45,9 @@ so this works on a stock install. A P2P group interface that lands in a stricter
 those two ports; if the sink is the GO and NM runs DHCP for it, UDP 67 must be reachable too
 (NM's `shared` method uses the `nm-shared` zone, which allows DHCP/DNS). The MirrorWire
 Flatpak has `--system-talk-name=org.fedoraproject.FirewallD1` and, since 2026-11-22 (owner
-decision D24), `--system-talk-name=org.freedesktop.NetworkManager` for the NM Wi-Fi P2P API.
+decision D24), `--system-talk-name=org.freedesktop.NetworkManager` for the NM Wi-Fi P2P API,
+and `--system-talk-name=org.freedesktop.hostname1` (owner, 2026-11-22, D25) to read the
+hostname for the "Name shown on Android" line.
 (The spike itself added no permission and ran as a native binary.)
 
 ## 2. Network structure
@@ -666,8 +668,10 @@ Sources checked (official docs only, read 2026-11-22, D20):
 
 Decision (D25): MirrorWire shows a **best estimate**, not the advertised value: hostname1
 `PrettyHostname`, else `StaticHostname`, else "none" (`miracast_nm::name`,
-`zbus_backend::sink_name`). When hostname1 cannot be reached (the Flatpak has no
-`org.freedesktop.hostname1` name), the fallback is NM `Settings.Hostname`: a non-empty value is
+`zbus_backend::sink_name`). The Flatpak has `--system-talk-name=org.freedesktop.hostname1`
+(owner-approved 2026-11-22; read-only, only these two properties), so it behaves like a native
+build. When hostname1 cannot be reached anyway (no systemd-hostnamed, or the name removed with
+`flatpak override`), the fallback is NM `Settings.Hostname`: a non-empty value is
 shown, an empty one says nothing about the pretty name, so the line is hidden (`Unknown`)
 rather than showing a possibly wrong "none". Every read is bounded to 3 s and runs on its own
 task, so it never delays discovery; names are trimmed, stripped of control characters and
