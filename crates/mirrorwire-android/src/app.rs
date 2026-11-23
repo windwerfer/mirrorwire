@@ -62,6 +62,8 @@ struct ViewerApp {
     /// overlay instead of clicking on the presenter).
     pen_mode: bool,
     pen_down: bool,
+    /// Last pen/touch force seen while pen mode is on (`None`: the device reports none).
+    pen_pressure: Option<u16>,
     pen_last_move: Option<Instant>,
     last_uri_check: Instant,
     /// Texture of the separately sent cursor, by image id.
@@ -130,6 +132,7 @@ impl ViewerApp {
             show_overlay: true,
             pen_mode: false,
             pen_down: false,
+            pen_pressure: None,
             pen_last_move: None,
             last_uri_check: Instant::now() - Duration::from_secs(1),
             cursor_tex: None,
@@ -519,7 +522,9 @@ impl ViewerApp {
         picture: Option<egui::Rect>,
         status: &session::Status,
     ) {
-        use mirrorwire_proto::control::{pointer_in_rect, Control, PointerPhase};
+        use mirrorwire_proto::control::{
+            pointer_in_rect, pressure_from_force, Control, PointerPhase,
+        };
         let Some(tx) = &status.control else { return };
         let Some(pic) = picture else { return };
         if !self.pen_mode {
@@ -530,9 +535,22 @@ impl ViewerApp {
                     phase: PointerPhase::Up,
                     x: 0,
                     y: 0,
+                    pressure: None,
                 });
             }
             return;
+        }
+        // Latest pen/touch force this frame (protocol 11); a mouse has none. Read every frame
+        // (also when a move is coalesced away) and kept, because touch events do not arrive
+        // with every repaint.
+        let force = ctx.input(|i| {
+            i.raw.events.iter().rev().find_map(|e| match e {
+                egui::Event::Touch { force, .. } => Some(*force),
+                _ => None,
+            })
+        });
+        if let Some(f) = force {
+            self.pen_pressure = pressure_from_force(f);
         }
         let Some(pos) = ctx.input(|i| i.pointer.interact_pos().or(i.pointer.latest_pos())) else {
             return;
@@ -565,7 +583,16 @@ impl ViewerApp {
         } else {
             return;
         };
-        let _ = tx.send(Control::Pointer { phase, x, y });
+        let pressure = self.pen_pressure;
+        if phase == PointerPhase::Up {
+            self.pen_pressure = None;
+        }
+        let _ = tx.send(Control::Pointer {
+            phase,
+            x,
+            y,
+            pressure,
+        });
     }
 
     /// The presenter's cursor as a textured quad over the video (same

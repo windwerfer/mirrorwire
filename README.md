@@ -166,7 +166,10 @@ again; NetworkManager's own Polkit rules apply), and
 to show the name Android lists for this computer on that screen).
 There is no host filesystem access. Screen capture goes through the
 ScreenCast portal, which needs no extra permission. Settings live in
-`~/.var/app/io.github.windwerfer.MirrorWire/config/mirrorwire`.
+`~/.var/app/io.github.windwerfer.MirrorWire/config/mirrorwire`. The optional pen pressure
+(below) is **not** a manifest permission: it needs `/dev/uinput`, which the sandbox only
+shows after you add `flatpak override --user --device=all io.github.windwerfer.MirrorWire`
+yourself (the app shows the command and how to undo it).
 
 `mirrorwire-media` does not depend on `mirrorwire-net`. The presenter pushes encoded frames
 into a `VideoSink`; the QUIC transport is one implementation, and a Miracast/RTSP
@@ -261,6 +264,39 @@ viewer gets a keyframe, and after 10 s of silence the connection ends. The prese
 `send queue full, 3 frames dropped`, and the status line shows the viewer's latest `viewer queue …`; the log has one
 `adaptive bitrate: cut …` line per cut. x264 no longer pads frames to the bitrate
 (`nal-hrd=cbr` filler is gone), so a simple screen sends less than the setting.
+
+## Pen pressure (optional, Linux presenter)
+
+Off by default. The RemoteDesktop portal has no pen device, so the normal **Pen** mode is a
+plain pointer without pressure. For drawing apps such as Krita, the presenter can instead
+create a virtual tablet ("MirrorWire virtual pen") through the kernel's uinput
+(decision D26). On the presenter screen, open **Pen pressure** and click **Check pen pressure
+support on my system**: it tries to open `/dev/uinput` for writing (no root, no prompt). Only
+when that passes can you tick **Enable pen pressure** (saved in `settings.json`).
+
+If the check fails, the window shows the commands to copy. For native builds and the AppImage:
+
+```sh
+echo 'KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"' | sudo tee /etc/udev/rules.d/70-mirrorwire-uinput.rules
+sudo udevadm control --reload
+sudo udevadm trigger --action=change --sysname-match=uinput
+```
+
+(`sudo modprobe uinput` and `/etc/modules-load.d/mirrorwire-uinput.conf` are added when the
+module is missing.) The Flatpak additionally needs
+`flatpak override --user --device=all io.github.windwerfer.MirrorWire` and a restart; Flatpak
+has no permission for `/dev/uinput` alone.
+
+**Warning:** the permission is not limited to MirrorWire. Every program running as your user
+can then create virtual input devices, including keyboards and mice, so it could type or click
+for you. In the Flatpak, `--device=all` also opens your other devices (e.g. webcams) to
+MirrorWire. Only do this on a computer you trust. **Undo:**
+`sudo rm -f /etc/udev/rules.d/70-mirrorwire-uinput.rules`, then the two `udevadm` commands
+above, and `flatpak override --user --reset io.github.windwerfer.MirrorWire` (or
+`--nodevice=all`). The viewer sends the pressure its pen or touch screen reports (protocol 11);
+a mouse sends none, which the virtual pen treats as full pressure. With several screens, map
+"MirrorWire virtual pen" to the shared screen in the desktop's tablet settings. Untested on
+hardware so far.
 
 ## Build and run: viewer on macOS
 

@@ -7,6 +7,8 @@ mod gui;
 mod miracast;
 #[cfg(all(feature = "miracast", target_os = "linux"))]
 mod miracast_flow;
+#[cfg(target_os = "linux")]
+mod pen;
 mod presenter;
 mod session;
 mod sync;

@@ -1,6 +1,8 @@
-# HANDOFF (branch flatpak-nm, based on main a5344da)
+# HANDOFF (branch pen-uinput, based on c20b796 = main e8760cb tree; steps 14-17 were on flatpak-nm)
 
 ## Goal
+Current (step 18, 2026-11-22): optional pen pressure on the Linux presenter through uinput, opt-in and off by default (owner decision D26, amends D1), with a system check button, an enable checkbox that unlocks only when the check passes, and a fix panel (commands, why, what changes, undo).
+
 Current (step 17, 2026-11-22): owner approved `--system-talk-name=org.freedesktop.hostname1` for the Flatpak so the "Name shown on Android" line (D25) also works there.
 
 Step 16 (2026-11-22): show the name Android lists for this computer on the Miracast screen, with an ℹ hint (hostnamectl) when it is empty (D25).
@@ -12,6 +14,14 @@ Step 13 (2026-11-21, 2026-11-21): make `cargo xtask ci` green again (clippy dead
 Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE laptop = sink), rootless via NetworkManager D-Bus WifiP2P + Polkit. Clean-room, new crates only, never touch main. Steps 1-6 one per session.
 
 ## Done
+- Step 18 (pen pressure via uinput, 2026-11-22, branch `pen-uinput`, local commits only, not pushed):
+  - Portal vs uinput (official docs only): the RemoteDesktop portal (v2) has device types KEYBOARD/POINTER/TOUCHSCREEN only and no pressure. libei's protocol has `ei_stylus` (pressure, tilt, distance), but no KDE/GNOME doc or release note read says the compositor offers it through the portal (Plasma 6.8 notes: nothing), and `reis` 0.7.1 (MIT) has no stylus module. Not "clearly possible" -> uinput, as the owner allowed.
+  - `1d5dc9c` D26 (table + log; D1 row amended; AGENTS.md §1.1 exception). Rejected: always-on uinput, no pressure, portal-only.
+  - `9e994d6` protocol 11: `pointer.pressure` (required, u16 or null); desktop + Android viewers send egui touch force; portal ignores it. protocol.md, CHANGELOG.
+  - `c0a3962` `settings.json` `pen_pressure` (off unless "on"; junk/broken = off).
+  - `a8c7874` `mirrorwire-app/src/pen/`: `check` (Probe trait, SystemProbe, report, fix/undo text), `uinput` (evdev `VirtualDevice`, pure frame sequences), `PenRouter` in `RemoteRoute`; GUI section "Pen pressure" on the presenter screen (`gui/pen.rs`); CLI prints the fix when saved on but failing. New dep `evdev` 0.13 (Apache-2.0 OR MIT) + nix 0.29, bitvec, funty, radium, tap, wyz (MIT). No new `unsafe` in our code.
+  - `5ac7040` README section, packaging/flatpak/README.md (user override, not manifest), roadmap, architecture, testing.
+
 - Step 1: `docs/agents/miracast.md` (packages, Polkit, firewall, P2P network structure, WFD IE, M1-M7 flow, media formats, Android expectations, Intel 8265 notes, spike architecture, test plan, commands to measure the T480s).
 
 - Step 2: miracast.md section 8a: mac80211_hwsim/virtual radios NOT usable without root here (no module tree, no Wi-Fi stack; userns works but cannot create radios). Skipped; tests use mocks + loopback.
@@ -80,6 +90,10 @@ Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE lapto
   - `9ce3598` manifest finish-arg with comment; D24 (table + log, rejected alternative), D2, AGENTS.md §1.2, README permissions, miracast.md §1 and the §15 Flatpak note; new `packaging/flatpak/README.md` (permission table, Flathub review justification with the exact D-Bus calls, GNOME Network Displays comparison, how to remove the permission).
 
 ## Decisions
+- D26: uinput only behind "Enable pen pressure" (off by default, saved), and only after the check passes. The app never runs the commands. Rule: `KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"` in `/etc/udev/rules.d/70-mirrorwire-uinput.rules` (before `73-seat-late.rules`, which applies the tag; same pattern as systemd's own `70-uaccess.rules` for `rfkill`). Rejected for the rule: `GROUP="input"` (also reads every keyboard), `MODE="0666"`. Flatpak: `flatpak override --user --device=all` (no narrower Flatpak device; `input` is `/dev/input` only); undo `--reset` (or `--nodevice=all`).
+- Virtual pen: `INPUT_PROP_DIRECT` only (display tablet; POINTER would mean an off-screen tablet needing a cursor). Pressure 0..4095; `null` from the viewer = full pressure; touching = at least 1. Device created on the first pen down, removed when the setting goes off or the presenter stops. Keys always stay on the portal; a failed create/write falls back to the portal pointer with a note and no retry until toggled.
+- The pen path bypasses the portal's Mirror-only check: the compositor maps the tablet (KDE: Drawing Tablet settings); the GUI says to map "MirrorWire virtual pen" to the shared screen when there are several.
+
 - D25: name shown on Android = hostname1 PrettyHostname, then StaticHostname (estimate; NM has no documented P2P name property, wpa_supplicant DeviceName is root-only). Step 17: the Flatpak has `--system-talk-name=org.freedesktop.hostname1` (owner 2026-11-22). Fallback when hostname1 is unreachable: NM `Settings.Hostname`; empty -> line hidden.
 - D24: Flatpak gets `--system-talk-name=org.freedesktop.NetworkManager` (owner 2026-11-22). Rejected: no permission + `flatpak override`/Flatseal hint.
 - The "not available" page stays (NM missing, no P2P device, permission removed by override); the override hint is shown only inside the Flatpak. Polkit refusals are not retried and get their own page.
@@ -97,6 +111,11 @@ Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE lapto
 - See also miracast.md section 7 (sink first, sans-IO parsers, no HDCP/UIBC, audio demuxed not played, rejected: root helpers, direct wpa_supplicant D-Bus, GStreamer/FFmpeg demux, GPL code).
 
 ## Open questions
+- Step 18, nothing hardware-tested: no `/dev/uinput` access, pen, touch screen, KDE session or GUI run here; the virtual device was never created. Unverified: KWin/libinput accepting the device as a tablet, its default screen mapping (several screens, Extend), Krita seeing pressure, the Android viewer's force values (egui-winit maps Android pressure to `force`; the Android crate was not compiled: no NDK linker here), whether `udevadm trigger --sysname-match=uinput` applies the ACL without a re-login, and whether `--device=all` exposes `/dev/uinput` in the sandbox (docs say "all devices" without a list).
+- When KWin offers `ei_stylus` through the RemoteDesktop portal and `reis` supports it, D26's uinput path can be replaced (no udev rule, no `--device=all`).
+- `cargo audit` reports RUSTSEC-2026-0592 (`url` 2.5.8, published 2026-11-20); also on the base commit, not from this step.
+- The no-GUI app build (`--no-default-features --features filmcraft`) already failed clippy before step 18 (unused imports, dead `ExtendSize::Fixed`); step 18 adds no new errors there.
+
 - Step 17: hostname1 permission added; not built with flatpak-builder, not run as an installed Flatpak, so whether the bus proxy then forwards hostname1's properties (expected: yes) is unverified. Check `flatpak info --show-permissions io.github.windwerfer.MirrorWire` and that the Miracast screen shows "none ℹ" on the T480s Flatpak.
 - Step 16: Not verified: that the P2P name follows the pretty rather than the static hostname, that toggling Wi-Fi applies a new name, the GUI look (no GUI run), the bus-proxy answer for hostname1 inside a Flatpak (any error or 3 s timeout -> NM fallback).
 - Step 13: default-feature CI (`cargo xtask ci` with portal + ffmpeg), the x264-vs-FilmCraft bench, the FilmCraft loopback and `cargo ndk -t arm64-v8a clippy -p mirrorwire-android` were not run here (no libpipewire/FFmpeg/NDK). Decoder output was compared old rev vs new rev only (no `ffmpeg` CLI for the FFmpeg bit-exact check).
@@ -123,6 +142,8 @@ Original: Miracast sink spike (Android tablet TB336FU = source, Fedora KDE lapto
 - The research box is a VM without Wi-Fi/iw/NM: nothing about the Intel 8265 was measured; the doc lists what to run on the T480s (section 9). Facts marked [verify] in miracast.md (WFD IE bits, wfd_* masks, NM incoming GO negotiation = risk R1) come from memory of the specs and are unconfirmed.
 
 ## Verify
+Step 18: `git log --oneline c20b796..pen-uinput` (5 commits + this HANDOFF); `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --no-default-features --features gui,filmcraft,miracast -- -D warnings` and the same with `gui,filmcraft`; `cargo test --workspace --no-fail-fast --no-default-features --features gui,filmcraft,miracast` (all pass except the known x264 test); `cargo xtask layers`; `cargo deny --all-features --locked check licenses bans sources` (ok); `(cd fuzz && cargo check --locked)`. Default features (portal, ffmpeg) cannot build here (no libpipewire). On the T480s: the hardware checklist in testing.md §4 (pen pressure).
+
 Step 17: `git log --oneline 28705c7..flatpak-nm` (2 commits + this HANDOFF); manifest parse with the throwaway serde_yaml binary `/tmp/yamlcheck` (8 finish-args, last `--system-talk-name=org.freedesktop.hostname1`); `cargo fmt --all --check`; `cargo clippy -p miracast-nm -p mirrorwire-app --all-targets --no-default-features --features gui,filmcraft,miracast -- -D warnings`; `cargo test -p miracast-nm` (31).
 
 Step 16: `git log --oneline 3d76ce4..flatpak-nm` (3 commits); `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --no-default-features --features gui,filmcraft,miracast -- -D warnings` and the same with `gui,filmcraft`; `cargo test -p miracast-nm -p miracast-loopback` (31 + 14); `cargo test -p mirrorwire-app --no-default-features --features gui,filmcraft,miracast` (34 pass, the x264 test fails without FFmpeg). On the T480s: open the Miracast screen, expect "Name shown on Android: none ℹ"; run the two hostnamectl commands, toggle Wi-Fi, check the tablet's Cast list.
@@ -134,6 +155,8 @@ Step 13: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --no
 `git log --oneline 767ed3c..miracast-spike`; `cargo test -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback` (94 tests); `cargo clippy -p miracast-nm -p miracast-rtsp -p miracast-rtp -p miracast-loopback --all-targets -- -D warnings`; `cargo fmt --all --check`; `cargo xtask layers`. `cargo xtask ci` cannot build in the research container (no libpipewire-0.3 dev package), unrelated to the spike.
 
 ## Next step
+Step 18: manager reviews `pen-uinput` and merges (protocol 11: presenter and viewers must update together; rebuild the Android APK). Then on the T480s: `cargo xtask ci`, the Android NDK clippy, and the testing.md §4 pen pressure checklist (check before/after the udev rule, Krita strokes from the tablet, Drawing Tablet KCM, undo).
+
 Step 17: manager reviews and merges `flatpak-nm` (steps 14, 16, 17); on the T480s install the CI Flatpak bundle, check the permissions list and the "Name shown on Android: none ℹ" line.
 
 Step 16: manager reviews `flatpak-nm` (steps 14 + 16) and merges; on the T480s check the name line and that the tablet shows the name after `hostnamectl` + Wi-Fi toggle; owner decides on the hostname1 Flatpak permission.

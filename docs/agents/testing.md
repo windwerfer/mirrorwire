@@ -37,6 +37,7 @@ Build dependencies (Fedora and Ubuntu package lists) are in the README and in
 | Unit (app) | `#[cfg(test)]` in `mirrorwire-app` | CLI parsing, capture/FEC preference precedence, process log, and `presenter::tests::test_source_streams_to_an_in_process_viewer`: test-pattern presenter (x264) → QUIC → viewer with 1 % loss in one process, live FEC/bitrate/cursor changes, markers read back (needs FFmpeg with libx264; part of the coverage report) |
 | Unit (firewall) | `mirrorwire-net/src/firewall.rs` | hint and notice for every firewalld/ufw state, a fake `Firewalld` proving the startup probe makes no privileged call, one click = one authorization and cancel = no further prompts (D14), D-Bus error classification, zone merging, open-port messages (the D-Bus/process glue is `firewall/system.rs`) |
 | Unit (rate) | `mirrorwire-proto/src/rate.rs`, `fec.rs`, `mirrorwire-media/src/pipeline.rs` | AIMD controller (cuts on queue/loss/backlog, floor 3 Mbit/s, ceiling = user setting, learned random-loss baseline), closed-loop sims with a FIFO bottleneck, auto FEC caps 35 %/60 %, token-bucket bandwidth simulator (viewer `--simulate-bandwidth-kbps`), x264 bitrate change live without a keyframe, VAAPI reopen rate-limited (down 1 s, up 5 s), keyframe pacing sim (frozen frames, send-loop lag) |
+| Unit (pen pressure, Linux) | `mirrorwire-app/src/pen/` | system check with a mocked `/dev/uinput` open (ok, permission denied, missing, other error; Flatpak vs native), exact fix/undo command text (udev rule, module lines only when missing outside the sandbox, Flatpak override + reset), router (off = portal only, device opened on the first down, keys stay on the portal, open/write failure falls back with a note and no retry until toggled), uinput frame sequences and pressure scale (D26) |
 | Loopback (end to end) | `scripts/loopback-test.sh` | test pattern → encoder → QUIC (pinned TLS, pairing) → reassembly → decoder, on localhost, with latency stats |
 | Real Wi-Fi (Android) | `scripts/android-wifi-run.sh`, `scripts/run-stats.py` | test pattern → x264 → QUIC over real Wi-Fi → the Android viewer on an adb-attached device; per-run video, cuts, queue, loss (§3.4) |
 | Real hardware | the owner's T480s + iMac | portal capture, VAAPI, Wi-Fi, OpenGL on a non-Metal Mac (only he can run this) |
@@ -610,6 +611,11 @@ screen**, not logs. So:
   sudo firewall-cmd --add-port=47800/udp"), not just what failed.
 - Ask for exactly what you need ("press S and photograph the top-left corner").
 - Don't ask him to install a toolchain on the iMac for routine debugging; build artifacts in CI.
+- Pen pressure (D26), not run yet: on the T480s click "Check pen pressure support on my
+  system" before and after the udev rule (photo of both results), tick "Enable pen pressure",
+  draw in Krita from the Android viewer with light and hard strokes, and check that "MirrorWire
+  virtual pen" shows in System Settings → Drawing Tablet. Then run the undo commands and check
+  again (it must fail, and pen mode must still work as a plain pointer).
 
 ## 5. CI and artifacts
 

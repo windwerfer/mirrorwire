@@ -110,6 +110,13 @@ impl PresenterHandle {
         }
     }
 
+    /// Switch the virtual uinput pen on or off for this session (D26). The caller passes
+    /// `true` only when the system check passed; the saved setting is written separately.
+    #[cfg(target_os = "linux")]
+    pub fn set_pen_pressure(&self, on: bool) {
+        self.capture.lock_ok().pen_pressure = on;
+    }
+
     pub fn refresh_firewall(&self) {
         let port = self.status.lock_ok().port;
         let hint = FirewallHint::for_port(port);
@@ -377,15 +384,37 @@ struct RemoteRoute {
 }
 
 impl RemoteRoute {
+    /// On Linux, pen input first passes the opt-in uinput pen (D26): while
+    /// `CaptureCtl::pen_pressure` is on it goes to the virtual pen, everything else (and pen
+    /// input when the pen cannot be created) to the portal.
     fn start(
         separate: Option<mpsc::Sender<mirrorwire_proto::control::RemoteInput>>,
         runtime: &tokio::runtime::Handle,
+        ctl: &Arc<Mutex<CaptureCtl>>,
     ) -> Self {
         let (tx, mut rx) = mpsc::channel(64);
         let target: Arc<Mutex<Option<mpsc::Sender<_>>>> = Arc::new(Mutex::new(separate.clone()));
         let t = target.clone();
+        #[cfg(target_os = "linux")]
+        let ctl = ctl.clone();
+        #[cfg(not(target_os = "linux"))]
+        let _ = ctl;
         runtime.spawn(async move {
+            #[cfg(target_os = "linux")]
+            let mut pen = crate::pen::PenRouter::new(crate::pen::uinput_opener());
             while let Some(input) = rx.recv().await {
+                #[cfg(target_os = "linux")]
+                let input = {
+                    let enabled = ctl.lock_ok().pen_pressure;
+                    let routed = pen.route(input, enabled);
+                    if let Some(note) = routed.note {
+                        ctl.lock_ok().pen_note = Some(note);
+                    }
+                    let Some(input) = routed.portal else {
+                        continue;
+                    };
+                    input
+                };
                 let dest = t.lock_ok().clone();
                 if let Some(dest) = dest {
                     // Full channel: drop (moves are replaced by newer ones).
@@ -454,7 +483,15 @@ fn present_session(
         Some(random_pairing_code()?)
     };
     let keyframe_controls = controls.clone();
-    let route = RemoteRoute::start(start_remote(&config_dir, &ctl), runtime);
+    #[cfg(target_os = "linux")]
+    {
+        let on = crate::pen::enabled_at_start(&config_dir);
+        ctl.lock_ok().pen_pressure = on;
+        if on {
+            tracing::info!("pen pressure on (virtual uinput pen on the first stroke)");
+        }
+    }
+    let route = RemoteRoute::start(start_remote(&config_dir, &ctl), runtime, &ctl);
     route.set_source(source.as_ref(), &ctl);
     let remote_keys = Some(route.sender());
     let presenter = Presenter::start(
@@ -740,6 +777,8 @@ pub fn run(args: PresentArgs, config_dir: &Path) -> Result<()> {
     let hud = Arc::new(Mutex::new(EncodeHudShim::default()));
     let ctl = Arc::new(Mutex::new(CaptureCtl::new(args.capture)));
     let ctl_print = ctl.clone();
+    #[cfg(target_os = "linux")]
+    let pen_config_dir = config_dir.to_path_buf();
 
     let result = present_session(
         args,
@@ -795,6 +834,10 @@ pub fn run(args: PresentArgs, config_dir: &Path) -> Result<()> {
                 println!("pairing code {code}");
             }
             println!("{}", ready.uri);
+            #[cfg(target_os = "linux")]
+            if let Some(text) = crate::pen::cli_report(&pen_config_dir) {
+                println!("{text}");
+            }
             let hint = FirewallHint::for_port(ready.listen_addr.port());
             if hint.show {
                 println!("{}", hint.message);

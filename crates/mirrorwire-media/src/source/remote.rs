@@ -214,7 +214,9 @@ pub(super) async fn inject(
 ) -> Result<()> {
     match input {
         RemoteInput::Key(key) => tap(proxy, session, key).await,
-        RemoteInput::Pointer { phase, x, y } => {
+        // The portal has no pressure (no tablet device type); `pressure` goes to the opt-in
+        // uinput pen in the app instead (D26).
+        RemoteInput::Pointer { phase, x, y, .. } => {
             let Some((node, size)) = stream else {
                 return Ok(());
             };

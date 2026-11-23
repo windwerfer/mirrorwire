@@ -459,11 +459,10 @@ connection (do not switch to TCP).
   presenter pixels.
 - Reliable stream for pen-down / pen-up, key events, and other edges, so a
   stroke or a key press never gets stuck.
-- Virtual input on the Linux presenter via `/dev/uinput`. That needs a udev or
-  permission rule, and the Flatpak sandbox cannot open uinput as-is. Plan
-  around that: a small privileged helper, or the xdg-desktop-portal
-  `RemoteDesktop` portal, which may cover mouse and keyboard without uinput.
-  Pen-tablet injection may still need uinput.
+- Virtual input on the Linux presenter: keys and the pointer go through the
+  xdg-desktop-portal `RemoteDesktop` portal. Pen pressure uses `/dev/uinput`
+  only as the opt-in of D26 (a udev `uaccess` rule the user adds, plus
+  `--device=all` as a user override in the Flatpak); no privileged helper.
 
 ### Modes (rough sizes)
 
@@ -471,7 +470,8 @@ connection (do not switch to TCP).
 |---|---|---|
 | Presenter remote (**built 2026-11-18**, untested on hardware: protocol 9 `remote_key`, RemoteDesktop portal, buttons on desktop and Android viewers) | Next, previous, and click as arrow / space keys. PowerPoint, LibreOffice Impress, and PDF viewers already understand these. | ~300–500 LOC |
 | Pen/touch as absolute pointer (**built 2026-11-18**, untested on hardware: protocol 10 `pointer`, RemoteDesktop pointer + MONITOR stream, "Pen" toggle on desktop and Android viewers; one RemoteDesktop session for capture + input since 2026-11-18, so Extend works; separate Mirror-only session as fallback) | Pen or finger down = left button, drag = drag. No pressure/tilt. | ~400 LOC |
-| Pen pressure and tilt (**wishlist, do not start**) | Needs uinput (conflicts with D1) or a future RemoteDesktop/libei tablet-tool capability. The owner keeps it off for now. | — |
+| Pen pressure (**built 2026-11-22**, untested on hardware: protocol 11 `pointer.pressure`, opt-in uinput pen per D26, "Pen pressure" section with system check + fix panel on the Linux presenter) | Pressure only; no tilt, hover or eraser yet. Open: does KWin map "MirrorWire virtual pen" onto the shared screen by default (several screens, Extend); real Android pressure values; switch to libei `ei_stylus` through the RemoteDesktop portal (no uinput, no udev rule) once KWin offers it and `reis` supports it. | ~900 LOC incl. tests |
+| Pen tilt, hover, eraser (**wishlist, do not start**) | Extends the D26 pen (`ABS_TILT_X/Y`, `ABS_DISTANCE`, `BTN_TOOL_RUBBER`) and the `pointer` message. | — |
 | Laser pointer | Finger position drawn as a coloured dot in a transparent overlay on the presenter; colours selectable. The KDE Wayland overlay is the hard part. | ~300–600 LOC |
 | Drawing overlay | The same overlay, plus strokes and colours, with an optional fade-out like old Linux screen-annotation / "flame" effects. | ~800–1500 LOC |
 | Touchpad | One finger moves the cursor, a tap clicks, two fingers scroll or right-click. | ~500–800 LOC |

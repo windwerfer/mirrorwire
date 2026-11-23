@@ -46,3 +46,6 @@ dirs = "7"
 miracast-loopback = { path = "../miracast-loopback", optional = true }
 miracast-nm = { path = "../miracast-nm", optional = true }
 miracast-rtp = { path = "../miracast-rtp", optional = true }
+# Opt-in pen pressure (D26): the virtual uinput pen. Apache-2.0 OR MIT; its safe
+# `uinput::VirtualDevice` keeps the ioctls out of our code (D15).
+evdev = { version = "0.13", default-features = false }

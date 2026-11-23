@@ -42,7 +42,9 @@ reason to crash; if it can't be read, start fresh and say so. See
 
 1. **No special privileges.** No root, `sudo`, `setcap`, udev rules, kernel modules,
    `/dev/uinput`, KMS/DRM grabbing or X11-only capture paths. Screen capture goes through the
-   xdg-desktop-portal ScreenCast API and PipeWire only.
+   xdg-desktop-portal ScreenCast API and PipeWire only. One owner-approved exception (D26,
+   2026-11-22): the opt-in, off-by-default pen pressure may write to `/dev/uinput`; the app
+   only *shows* the udev rule (and the Flatpak override) for the user to run, never runs them.
 2. **No new Flatpak permissions.** The `finish-args` in
    `packaging/flatpak/io.github.windwerfer.MirrorWire.yml` are the ceiling:
    `--socket=wayland`, `--socket=fallback-x11`, `--share=ipc`, `--share=network`,

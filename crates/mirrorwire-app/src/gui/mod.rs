@@ -26,6 +26,8 @@ use std::time::Instant;
 /// setting applies. FEC and pacing still follow the link.
 #[cfg(all(feature = "miracast", target_os = "linux"))]
 mod miracast;
+#[cfg(target_os = "linux")]
+mod pen;
 mod present;
 mod scan;
 mod video;
@@ -140,6 +142,8 @@ pub fn run(
             Box::new(move |cc: &eframe::CreationContext<'_>| {
                 let capture =
                     crate::capture_prefs::resolve(None, None, None, None, None, &config_dir);
+                #[cfg(target_os = "linux")]
+                let pen = pen::PenUi::load(&config_dir);
                 let mut app = MirrorApp {
                     identity,
                     runtime: handle,
@@ -162,6 +166,7 @@ pub fn run(
                     show_remote: false,
                     pen_mode: false,
                     pen_down: false,
+                    pen_pressure: None,
                     pen_last_move: None,
                     fullscreen: false,
                     display_latency_ms: 0.0,
@@ -192,6 +197,8 @@ pub fn run(
                     miracast: None,
                     miracast_session: None,
                     miracast_name_help: false,
+                    #[cfg(target_os = "linux")]
+                    pen,
                 };
                 if let Some(target) = initial {
                     app.screen = Screen::View;
@@ -254,6 +261,8 @@ struct MirrorApp {
     /// normal tap does not click on the presenter).
     pen_mode: bool,
     pen_down: bool,
+    /// Last pen/touch force seen while pen mode is on (`None`: no sensor, e.g. a mouse).
+    pen_pressure: Option<u16>,
     pen_last_move: Option<Instant>,
     fullscreen: bool,
     display_latency_ms: f64,
@@ -290,6 +299,9 @@ struct MirrorApp {
     /// The ℹ explanation under "Name shown on Android: none" is open (D25).
     #[cfg_attr(not(all(feature = "miracast", target_os = "linux")), allow(dead_code))]
     miracast_name_help: bool,
+    /// Presenter: opt-in pen pressure (D26).
+    #[cfg(target_os = "linux")]
+    pen: pen::PenUi,
 }
 
 impl MirrorApp {

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+- Protocol version 11: the `pointer` control message carries a required `pressure`
+  (0..65535, or `null` without a sensor). Presenter and viewer must both be updated.
+
+### Added
+- Optional pen pressure on the Linux presenter (off by default, decision D26): a "Check pen
+  pressure support on my system" button, an "Enable pen pressure" checkbox that only unlocks
+  when the check passes, and a fix panel with the udev rule (and the Flatpak override) to copy.
+  When on, pen input goes to a virtual uinput pen with pressure instead of the RemoteDesktop
+  portal pointer.
+
 ## 0.1.0
 
 First release. Low-latency screen mirroring over a LAN.

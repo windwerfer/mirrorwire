@@ -30,6 +30,10 @@ pub struct Settings {
     /// Adaptive bitrate: `on` or `off`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adaptive_bitrate: Option<String>,
+    /// Opt-in pen pressure through a virtual uinput pen (decisions D26): `on` or `off`.
+    /// Off when missing or unreadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pen_pressure: Option<String>,
 }
 
 impl Settings {
@@ -86,6 +90,23 @@ pub fn save_capture(
     settings.fps = Some(fps.to_owned());
     settings.fec = Some(fec.to_owned());
     settings.adaptive_bitrate = Some(adaptive.to_owned());
+    settings.save(config_dir)
+}
+
+/// The saved "Enable pen pressure" choice (D26). Off unless `settings.json` says `on`
+/// (missing, junk or an unreadable file all mean off).
+pub fn pen_pressure_saved(config_dir: &Path) -> bool {
+    Settings::load(config_dir).pen_pressure.as_deref() == Some("on")
+}
+
+/// Persist the "Enable pen pressure" choice, keeping every other setting.
+pub fn save_pen_pressure(config_dir: &Path, on: bool) -> Result<()> {
+    let mut settings = Settings::load(config_dir);
+    let value = if on { "on" } else { "off" };
+    if settings.pen_pressure.as_deref() == Some(value) {
+        return Ok(());
+    }
+    settings.pen_pressure = Some(value.to_owned());
     settings.save(config_dir)
 }
 
@@ -192,6 +213,7 @@ mod tests {
             fps: Some("max".into()),
             fec: Some("20%".into()),
             adaptive_bitrate: Some("on".into()),
+            pen_pressure: Some("on".into()),
         };
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);
@@ -219,6 +241,28 @@ mod tests {
         assert_eq!(s.mode.as_deref(), Some("extend"));
         assert_eq!(s.fec.as_deref(), Some("auto"));
         assert_eq!(s.adaptive_bitrate.as_deref(), Some("off"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pen_pressure_is_off_by_default_and_persists() {
+        let dir = temp_dir();
+        assert!(!pen_pressure_saved(&dir));
+        save_port(&dir, 47555).unwrap();
+        save_pen_pressure(&dir, true).unwrap();
+        assert!(pen_pressure_saved(&dir));
+        // Other settings survive, and saving capture settings keeps the pen choice.
+        save_capture(&dir, "mirror", "separate", "60", "auto", true).unwrap();
+        let s = Settings::load(&dir);
+        assert_eq!(s.port, Some(47555));
+        assert_eq!(s.pen_pressure.as_deref(), Some("on"));
+        save_pen_pressure(&dir, false).unwrap();
+        assert!(!pen_pressure_saved(&dir));
+        // Junk or a broken file means off, never a crash.
+        std::fs::write(Settings::path(&dir), r#"{"pen_pressure": "maybe"}"#).unwrap();
+        assert!(!pen_pressure_saved(&dir));
+        std::fs::write(Settings::path(&dir), b"{not json").unwrap();
+        assert!(!pen_pressure_saved(&dir));
         std::fs::remove_dir_all(&dir).ok();
     }
 
