@@ -1,4 +1,13 @@
-# HANDOFF (branch pen-uinput, based on c20b796 = main e8760cb tree; steps 14-17 were on flatpak-nm)
+# HANDOFF
+
+## Release status (2026-11-25)
+- v0.2.0 (tag 3161a39 -> 5d27d7c) was tagged but never released: Audit failed on RUSTSEC-2026-0592 (url 2.5.8), so no GitHub Release exists for it. The tag is untouched.
+- v0.2.1 (commit 88192b2a3c43cf4e5bd2f47be85ecff0f6376894, annotated tag v0.2.1) is the first published 0.2 release: https://github.com/windwerfer/mirrorwire/releases/tag/v0.2.1
+- Assets: MirrorWire-x86_64.AppImage, MirrorWire-x86_64.flatpak, MirrorWire-windows.zip, MirrorWire-0.2.1-macos-universal.dmg, MirrorWire-arm64-v8a.apk.
+- CI: tag Build run 45559672556 green (Audit, CodeQL, Sonar, all packages, release); CI, Build, CodeQL on main green. Local loopback p95 25.53 ms (budget 40).
+- Open: pen pressure (uinput) and the Miracast sink under Flatpak are not hardware-tested; `paste` 1.0.15 unmaintained warning (RUSTSEC-2024-0436) remains allowed; protocol 11 needs presenter and all viewers updated together.
+
+## Previous notes (branch pen-uinput, based on c20b796 = main e8760cb tree; steps 14-17 were on flatpak-nm)
 
 ## Goal
 Current (step 18, 2026-11-22): optional pen pressure on the Linux presenter through uinput, opt-in and off by default (owner decision D26, amends D1), with a system check button, an enable checkbox that unlocks only when the check passes, and a fix panel (commands, why, what changes, undo).
