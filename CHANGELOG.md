@@ -2,24 +2,6 @@
 
 ## 0.2.2
 
-### Added
-- Reproducible Android build: pinned toolchain (`rust-toolchain.toml`, Rust 1.100.0), fixed
-  timestamps (`SOURCE_DATE_EPOCH` = commit time), remapped build paths, stored `classes.dex`,
-  fixed zip order; `MIRRORWIRE_UNSIGNED=1 packaging/android/build-apk.sh` writes the unsigned
-  aligned APK. Two clones at different paths give the same bytes and `apksigcopier compare`
-  accepts the signed APK. CI checks this on every build.
-- F-Droid / IzzyOnDroid preparation: `fastlane/metadata/android/en-US/` and a draft
-  `packaging/fdroid/io.github.windwerfer.mirrorwire.yml` with `packaging/fdroid/README.md`
-  (not submitted).
-
-### Changed
-- Android `versionCode` is derived from the version (major*1000000 + minor*1000 + patch, 0.2.2
-  is 2002) instead of the CI run number (v0.2.1 had 139, so this upgrades it). The dev app adds
-  2000000000. The APK is signed with v2 + v3 only (no v1 JAR signature; minSdk is 26).
-- `scripts/run-stats.py` and `scripts/sim-compare.py` only read files inside the current
-  directory, the repository, the temp directory or `MIRRORWIRE_SCRIPT_BASE` (Sonar S8707).
-
-
 ### Breaking
 - Protocol version 12: new `pen_mode` and `video_paused` control messages. Update the
   presenter, the desktop viewer and the Android viewer together.
@@ -37,11 +19,24 @@
   picture again (resumes with a keyframe).
 - Presenter window: a dialog explains the desktop's pointer-permission prompt while the
   capture reopens with input for the viewer's pen.
+- Reproducible Android build: pinned toolchain (`rust-toolchain.toml`, Rust 1.100.0), fixed
+  timestamps (`SOURCE_DATE_EPOCH` = commit time), remapped build paths, stored `classes.dex`,
+  fixed zip order; `MIRRORWIRE_UNSIGNED=1 packaging/android/build-apk.sh` writes the unsigned
+  aligned APK. Two clones at different paths give the same bytes and `apksigcopier compare`
+  accepts the signed APK. CI checks this on every build.
+- F-Droid / IzzyOnDroid preparation: `fastlane/metadata/android/en-US/` and a draft
+  `packaging/fdroid/io.github.windwerfer.mirrorwire.yml` with `packaging/fdroid/README.md`
+  (not submitted).
 
 ### Changed
 - The presenter starts with screen sharing only. Pointer and keyboard permission are asked
   when the viewer switches its pen on (the capture reopens once, the picture pauses for a
   moment), or at start without a dialog when the desktop already remembers that permission.
+- Android `versionCode` is derived from the version (major*1000000 + minor*1000 + patch, 0.2.2
+  is 2002) instead of the CI run number (v0.2.1 had 139, so this upgrades it). The dev app adds
+  2000000000. The APK is signed with v2 + v3 only (no v1 JAR signature; minSdk is 26).
+- `scripts/run-stats.py` and `scripts/sim-compare.py` only read files inside the current
+  directory, the repository, the temp directory or `MIRRORWIRE_SCRIPT_BASE` (Sonar S8707).
 
 ### Fixed
 - Pen/touch and remote keys never worked on KDE: the presenter passed `persist_mode` and a
