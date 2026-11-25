@@ -80,7 +80,7 @@ echo "== Rust library ($ABI, ${MIRRORWIRE_PROFILE:-release} profile)"
 CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
 SYSROOT="$(rustc --print sysroot)"
 RUSTFLAGS_REPRO=("--remap-path-prefix=$ROOT=/mirrorwire" "--remap-path-prefix=$CARGO_HOME_DIR=/cargo"
-  "--remap-path-prefix=$SYSROOT=/rustc-sysroot" "--remap-path-prefix=$ANDROID_NDK_HOME=/ndk"
+  "--remap-path-prefix=${CARGO_TARGET_DIR:-$ROOT/target}=/target" "--remap-path-prefix=$SYSROOT=/rustc-sysroot" "--remap-path-prefix=$ANDROID_NDK_HOME=/ndk"
   "-Clink-arg=-Wl,--build-id=none")
 export CARGO_ENCODED_RUSTFLAGS="$(IFS=$'\x1f'; echo "${RUSTFLAGS_REPRO[*]}")"
 unset RUSTFLAGS
