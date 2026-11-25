@@ -348,21 +348,18 @@ fn stream_info_from(encoder: &Encoder, fps: u32, cursor: CursorCapture) -> Strea
     }
 }
 
-/// The presenter remote: taps from the viewer become key presses through the RemoteDesktop
-/// portal (Linux with the portal feature); elsewhere the taps are dropped.
+/// The presenter remote's fallback when capture and input cannot share one portal session:
+/// key taps through a separate key-only RemoteDesktop session (Linux with the portal feature;
+/// pen/touch there is refused with a note, see `remote.rs`); elsewhere the taps are dropped.
 #[cfg(all(target_os = "linux", feature = "portal"))]
 fn start_remote(
     config_dir: &std::path::Path,
     ctl: &Arc<Mutex<CaptureCtl>>,
 ) -> Option<mpsc::Sender<mirrorwire_proto::control::RemoteInput>> {
-    let ctl_mode = ctl.clone();
     let ctl = ctl.clone();
     Some(mirrorwire_media::source::remote::spawn_remote_injector(
         config_dir.join("remote-desktop.token"),
         Arc::new(move |line| ctl.lock_ok().remote_note = Some(line)),
-        Arc::new(move || {
-            ctl_mode.lock_ok().asked_mode == mirrorwire_media::source::CaptureMode::Mirror
-        }),
     ))
 }
 

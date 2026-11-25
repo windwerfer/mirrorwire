@@ -13,7 +13,7 @@
 //! (changed) bitmap go to a [`CursorSink`], independent of video frames. When
 //! the portal does not offer metadata cursors, it falls back to embedded.
 
-use super::remote::{inject, RemoteStatusSink};
+use super::remote::{inject, RemoteStatusSink, INPUT_TIMEOUT};
 use super::{CaptureMode, CursorCapture, CursorSink, FrameSource};
 use crate::frame::{
     DmaBufFrame, PixelFormat, RawFrame, DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR,
@@ -161,28 +161,43 @@ impl PortalSource {
                         Ok((held, negotiated)) => {
                             let _ = negotiated_tx.send(Ok(negotiated));
                             let mut stop_portal_rx = stop_portal_rx;
-                            loop {
+                            // Input never holds up the capture: each call is bounded by
+                            // INPUT_TIMEOUT, and a stop (source dropped or reopened) wins even
+                            // while one is in flight, so `Drop` never waits on the portal.
+                            'serve: loop {
                                 tokio::select! {
-                                    _ = &mut stop_portal_rx => break,
+                                    biased;
+                                    _ = &mut stop_portal_rx => break 'serve,
                                     Some(input) = input_rx.recv() => {
-                                        if let Held::Combined(proxy, session, stream) = &held {
-                                            if let Err(e) = inject(proxy, session, *stream, input).await {
-                                                tracing::warn!("remote input failed: {e:#}");
-                                                if let Some(st) = &input_status {
-                                                    st(format!("presenter remote: input failed ({e:#})"));
-                                                }
+                                        let Held::Combined(proxy, session, stream) = &held else {
+                                            continue;
+                                        };
+                                        let sent = tokio::select! {
+                                            biased;
+                                            _ = &mut stop_portal_rx => break 'serve,
+                                            r = tokio::time::timeout(
+                                                INPUT_TIMEOUT,
+                                                inject(proxy, session, *stream, input),
+                                            ) => r.unwrap_or_else(|_| Err(anyhow!("the portal did not answer"))),
+                                        };
+                                        if let Err(e) = sent {
+                                            tracing::warn!("remote input failed: {e:#}");
+                                            if let Some(st) = &input_status {
+                                                st(format!("presenter remote: input failed ({e:#}); the video is not affected"));
                                             }
                                         }
                                     }
                                 }
                             }
+                            // Bounded too: a portal that does not answer must not keep
+                            // the capture from closing (and a reopen from starting).
                             match held {
                                 Held::Cast(proxy, session) => {
-                                    let _ = session.close().await;
+                                    let _ = tokio::time::timeout(INPUT_TIMEOUT, session.close()).await;
                                     drop(proxy);
                                 }
                                 Held::Combined(_, session, _) => {
-                                    let _ = session.close().await;
+                                    let _ = tokio::time::timeout(INPUT_TIMEOUT, session.close()).await;
                                 }
                             }
                         }
@@ -447,7 +462,7 @@ async fn start_session(opts: &PortalOptions) -> Result<(Held, Negotiated)> {
                 tracing::warn!("combined capture + input session unavailable: {e:#}");
                 input_fallback = Some(format!(
                     "presenter remote: the capture session could not carry input ({e:#}); \
-                     using a separate session (pen/touch then works in Mirror mode only)"
+                     keys use a separate session; pen/touch needs the shared one)"
                 ));
             }
         }
