@@ -72,9 +72,10 @@ Newest first. Add an entry when the owner decides something non-obvious.
   sends `SelectSources` without them; `SelectDevices` keeps `persist_mode` 2 and the token.
   Failed half-set-up sessions are now closed (combined and key-only). Consequence: the
   2026-11-18 combined design had never worked on hardware; input always used the separate
-  injector. Confirmed on the owner's KDE session 2026-11-25 (native build) that the combined
-  session now starts; not yet confirmed that it restores without a prompt the next time (the
-  docs do not say the RemoteDesktop token restores the cast sources). Whether the frozen capture was caused
+  injector. The error was seen on the owner's KDE session 2026-11-25 (twice, native builds); the
+  fixed combined session has not yet been seen to start on hardware (the 2026-11-25 test run
+  waited for its dialog unanswered), nor is it known that its RemoteDesktop token restores the
+  cast sources without a prompt the next time (the docs do not say). Whether the frozen capture was caused
   by those leaked failed sessions is not proven (not reproducible on the build box). New UI:
   the presenter window shows a dialog while the capture reopens with pointer permission;
   the start screen's ✏ next to Presenter is green while a RemoteDesktop restore token exists

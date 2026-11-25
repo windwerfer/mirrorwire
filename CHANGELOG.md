@@ -14,7 +14,7 @@
 - Start screen: a **✏** next to the Presenter button shows whether the desktop's pen/keys
   permission is remembered (green); click it for an explanation and **Forget the pen and
   keys permission**.
-- Viewer ☰ menu (desktop and Android): **Wacom pen (no video)** and **PowerPoint remote
+- Viewer menu (☰, desktop and Android): **Wacom pen (no video)** and **PowerPoint remote
   only (no video)**. The presenter then skips encoding and sending until the viewer shows the
   picture again (resumes with a keyframe).
 - Presenter window: a dialog explains the desktop's pointer-permission prompt while the
@@ -28,6 +28,18 @@
   session is now keys only. Pen/touch there shows a note instead of starting a second
   screen-cast session (and dialog) while the capture runs. The opt-in virtual pen (D26) is not
   affected.
+- Viewers (Android and desktop): the top-right corner of the video always shows three icons,
+  menu (☰), Pen and Disconnect, replacing Android's Disconnect and Pen text buttons and the
+  desktop's Pen button in the remote row. The menu holds Pen, PowerPoint mode (the
+  presenter-remote row), Hide (stats and that row; the icons stay) and Show statistics; the
+  desktop menu also has 1:1 pixel-exact display and Fullscreen. Keys `S`, `R`, `1`, `F`,
+  `Esc` are unchanged (Esc closes an open menu first).
+- Show statistics is saved in `settings.json` (`show_stats`, on by default; missing or
+  unreadable means on).
+- Android: picture warnings (GPU error, stall, stale picture) stay visible when the stats are
+  off or the overlay is hidden.
+  The menu also holds the two no-video modes (Wacom pen, PowerPoint remote only). Not tested
+  on hardware yet.
 
 ### Fixed
 - Pen/touch and remote keys never worked on KDE: the presenter passed `persist_mode` and a

@@ -9,7 +9,7 @@ A Cargo workspace with six crates. Lower layers never depend on higher ones.
 | L0 | `mirrorwire-proto` | Wire format: datagram fragment header, fragmentation and reassembly, control messages (JSON over a length-prefixed stream), clock-offset estimation, latency statistics, protocol constants (`PROTOCOL_VERSION`, `ALPN`, `MDNS_SERVICE`, `DEFAULT_PORT`). **No I/O, no async, no FFmpeg.** | `bytes`, `serde`, `serde_json`, `anyhow`, `reed-solomon-simd` (FEC) only |
 | L0 | `mirrorwire-film` | The only crate that calls FilmCraft's decoders (`craft-video`, pinned here): `FilmDecoder` → tight I420 `Planes`, one worker thread, panics caught. Upgrades and measurements: [filmcraft.md](filmcraft.md). | `anyhow`, `craft-video` only |
 | L1 | `mirrorwire-media` | Frame sources (test pattern, portal + PipeWire), H.264 encoder (`Encoder` enum: FFmpeg VAAPI / VideoToolbox / x264 behind cargo feature `ffmpeg`, or pure-Rust FilmCraft behind `filmcraft`), H.264 decoders behind the `VideoDecoder` trait (FFmpeg hardware/software in `decode.rs`, FilmCraft's pure-Rust decoder from `mirrorwire-film` in `film_decode.rs`, the default software decoder except on macOS), YUV→RGBA conversion, the capture→encode loop and the `VideoSink` trait. | `mirrorwire-proto`, `mirrorwire-film` |
-| L1 | `mirrorwire-net` | Identity (self-signed cert), pinned TLS verifiers, QUIC presenter/viewer sessions, pairing (`paired_viewers.json`, pairing code, `mirrorwire://` URI, QR), mDNS announce/browse, persisted presenter settings (`settings.json`), Linux firewall detection and a best-effort firewalld D-Bus open-port request. | `mirrorwire-proto` |
+| L1 | `mirrorwire-net` | Identity (self-signed cert), pinned TLS verifiers, QUIC presenter/viewer sessions, pairing (`paired_viewers.json`, pairing code, `mirrorwire://` URI, QR), mDNS announce/browse, persisted presenter and viewer settings (`settings.json`), Linux firewall detection and a best-effort firewalld D-Bus open-port request. | `mirrorwire-proto` |
 | L2 | `mirrorwire-app` | The `mirrorwire` binary: CLI (`present`, `view`, `view --headless`, `discover`), presenter and viewer glue, the egui GUI (start screen, presenter status, viewer list, video, stats overlay), and on Linux the opt-in pen pressure (`pen/`: system check and fix text, the virtual uinput pen via the `evdev` crate, the router between it and the portal, on its own `remote-input` thread so no input call runs on the network runtime; D26). | all of the above |
 | L2 | `mirrorwire-android` | The Android viewer: `libmirrorwire_android.so` loaded by the APK. egui (glow) via `android-activity` NativeActivity, MediaCodec decode (`ndk` crate, `AImageReader` → CPU BT.709 → texture), the viewer receive loop. No FFmpeg. On non-Android targets only its pure helpers (`h264`, `yuv`) compile, so host `cargo test` covers them. | `mirrorwire-proto`, `mirrorwire-net`, `mirrorwire-film` |
 
@@ -126,7 +126,7 @@ macOS: `~/Library/Application Support/mirrorwire`), overridable with `--config-d
 | `paired_viewers.json` | presenter | fingerprints and names of viewers that showed the pairing code |
 | `portal_restore_token` | presenter (Linux) | ScreenCast restore token, so the share dialog appears once |
 | `portal_restore_token_input`, `portal_restore_token_extend_input`, `remote-desktop.token` | presenter (Linux) | RemoteDesktop restore tokens (screen + pen/keys permission). The start screen's ✏ is green while one exists; "Forget the pen and keys permission" deletes them |
-| `settings.json` | presenter | Saved UDP port from the start-screen field. Overridden by `--port` or `MIRRORWIRE_PORT` for one run. |
+| `settings.json` | presenter, viewer | Saved UDP port from the start-screen field (overridden by `--port` or `MIRRORWIRE_PORT` for one run), the presenter's capture and pen-pressure choices, and the viewer's `show_stats` (on unless `"off"`; the Android viewer keeps its own in the app data dir). |
 
 Deleting the directory resets identity and pairings; viewers then see a new fingerprint.
 
@@ -162,6 +162,8 @@ packaging/android/MainActivity.java   extends NativeActivity; the only Java. Hol
                                       into files/h264_decoders.txt
 crates/mirrorwire-android             android_main -> eframe (glow) -> ViewerApp
   app.rs      home (mDNS list, 6-digit keypad, link field), connecting steps, video + overlay;
+  chrome.rs   corner icons (menu, pen, disconnect) + overlay state; twin of
+              mirrorwire-app's gui/chrome.rs, keep the two in step
               polls pending_uri.txt every 500 ms (QR scanned with the camera app opens the link)
   session.rs  QUIC receive loop (like mirrorwire-app's viewer, but a 6-deep decode queue)
               + a decode thread that also polls MediaCodec every 8 ms for late pictures

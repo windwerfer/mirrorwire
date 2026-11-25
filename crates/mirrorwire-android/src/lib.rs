@@ -20,6 +20,8 @@ pub mod yuv;
 #[cfg(target_os = "android")]
 mod app;
 #[cfg(target_os = "android")]
+mod chrome;
+#[cfg(target_os = "android")]
 mod codec;
 #[cfg(target_os = "android")]
 #[allow(unsafe_code)]

@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+mod chrome;
 /// Shown under the encoder row while RC is CQP or ICQ: those modes hold a fixed quality, and
 /// the pipeline leaves the encoder alone when the adaptive bitrate moves its cap
 /// (`pipeline::maybe_replace_encoder`, `quality_mode`). Only a change of the user's own
@@ -176,6 +177,7 @@ pub fn run(
                 let pen = pen::PenUi::load(&config_dir);
                 let use_filmcraft =
                     !HAS_FFMPEG || mirrorwire_net::settings::filmcraft_encoder_saved(&config_dir);
+                let show_stats = mirrorwire_net::settings::show_stats_saved(&config_dir);
                 let mut app = MirrorApp {
                     identity,
                     runtime: handle,
@@ -194,8 +196,12 @@ pub fn run(
                     presenting: None,
                     texture: None,
                     qr_texture: None,
-                    show_stats: true,
-                    show_remote: false,
+                    overlay: chrome::Overlay {
+                        hidden: false,
+                        show_stats,
+                        powerpoint: false,
+                    },
+                    overlay_note: None,
                     pen_mode: false,
                     view_mode: ViewMode::Video,
                     video_paused_sent: None,
@@ -291,9 +297,11 @@ struct MirrorApp {
     presenting: Option<PresenterHandle>,
     texture: Option<egui::TextureHandle>,
     qr_texture: Option<egui::TextureHandle>,
-    show_stats: bool,
-    /// Presenter-remote buttons over the video (R toggles).
-    show_remote: bool,
+    /// Video overlay: Hide, Show statistics (saved; S toggles), PowerPoint mode (the
+    /// presenter-remote row; R toggles).
+    overlay: chrome::Overlay,
+    /// Why the Show statistics choice could not be saved (shown in the menu).
+    overlay_note: Option<String>,
     /// Pen/touch/mouse over the picture drives the presenter's pointer (off by default, so a
     /// normal tap does not click on the presenter).
     pen_mode: bool,
@@ -374,6 +382,7 @@ impl MirrorApp {
         self.texture = None;
         self.yuv = None;
         self.cursor_tex = None;
+        self.overlay.show_stats = mirrorwire_net::settings::show_stats_saved(&self.config_dir);
         self.last_target = Some(target.clone());
         self.watching = Some(viewer::spawn(
             &self.runtime,
@@ -411,6 +420,7 @@ impl MirrorApp {
         self.texture = None;
         self.yuv = None;
         self.cursor_tex = None;
+        self.overlay.show_stats = mirrorwire_net::settings::show_stats_saved(&self.config_dir);
         self.last_target = None;
         self.miracast = Some(peer.clone());
         self.miracast_name_help = false;

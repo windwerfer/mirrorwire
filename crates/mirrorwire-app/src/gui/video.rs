@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The corner icons start this far below the top edge.
+const MARGIN_TOP: f32 = 8.0;
+
 impl MirrorApp {
     pub(super) fn video_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -131,10 +134,14 @@ impl MirrorApp {
             Some(CursorMode::Hidden) => "cursor hidden".to_owned(),
             None => "cursor ?".to_owned(),
         };
-        if self.show_stats {
+        let menu_id = egui::Id::unique("mirrorwire_overlay_menu");
+        // Read before the popup runs this frame: Esc then only closes the menu, and the click
+        // that dismisses it does not also reach the presenter as a pen press.
+        let menu_was_open = egui::Popup::is_id_open(&ctx, menu_id);
+        if self.overlay.stats_visible() {
             let stream = status.stream.as_ref();
             let text = format!(
-                "{}x{}  source {:.1} fps  {:.2} Mbit/s  {} ({})  {}\n{}  decode {:.2} ms  {}  capture->texture {:.1} ms\nwindow: {}\n{}\n{}\n{}\n{}\nS: stats  R: presenter remote  1: 1:1 pixels  F / double-click: fullscreen  Esc: disconnect",
+                "{}x{}  source {:.1} fps  {:.2} Mbit/s  {} ({})  {}\n{}  decode {:.2} ms  {}  capture->texture {:.1} ms\nwindow: {}\n{}\n{}\n{}\n{}\nmenu (top right)  S: stats  R: PowerPoint mode  1: 1:1 pixels  F / double-click: fullscreen  Esc: disconnect",
                 status.native_width.max(stream.map(|s| s.width).unwrap_or(0)),
                 status.native_height.max(stream.map(|s| s.height).unwrap_or(0)),
                 status.source_fps,
@@ -152,36 +159,26 @@ impl MirrorApp {
                 status.bottleneck,
                 scale_info,
             );
-            ui.painter().text(
-                rect.left_top() + egui::vec2(8.0, 8.0),
-                egui::Align2::LEFT_TOP,
+            let galley = ui.painter().layout(
                 text,
                 egui::FontId::monospace(12.0),
+                egui::Color32::from_rgb(0, 255, 120),
+                (rect.width() - chrome::COLUMN_WIDTH - 16.0).max(80.0),
+            );
+            ui.painter().galley(
+                rect.left_top() + egui::vec2(8.0, 8.0),
+                galley,
                 egui::Color32::from_rgb(0, 255, 120),
             );
         }
 
-        self.view_menu(&ctx, &status);
         if self.view_mode == ViewMode::Remote {
             remote_only_buttons(&ctx, &status);
-        } else if self.show_remote {
+        } else if self.overlay.powerpoint_visible() {
             egui::Area::new(egui::Id::unique("remote_buttons"))
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
                 .show(&ctx, |ui| {
                     ui.horizontal(|ui| {
-                        let pen = egui::Button::new(egui::RichText::new("Pen").size(22.0))
-                            .min_size(egui::vec2(110.0, 52.0))
-                            .selected(self.pen_mode);
-                        if ui.add(pen).clicked() {
-                            self.pen_mode = !self.pen_mode;
-                            // Tell the presenter at once (protocol 12): it asks its desktop
-                            // for pointer permission now, not on the first stroke.
-                            if let Some(tx) = &status.control {
-                                let _ = tx.send(mirrorwire_proto::control::Control::PenMode {
-                                    on: self.pen_mode,
-                                });
-                            }
-                        }
                         for key in mirrorwire_proto::control::RemoteKey::ALL {
                             let button =
                                 egui::Button::new(egui::RichText::new(key.label()).size(22.0))
@@ -203,26 +200,119 @@ impl MirrorApp {
             ui.scope_id().with("video"),
             egui::Sense::click_and_drag(),
         );
-        self.send_pen(&ctx, &response, picture_rect, &status);
+        if !menu_was_open || self.pen_down {
+            self.send_pen(&ctx, &response, picture_rect, &status);
+        }
         // Never call Response methods inside `ctx.input(..)`: on a click,
         // `double_clicked()` takes the context lock again, and a nested read
         // lock deadlocks as soon as the decode thread is waiting to write
         // (`request_repaint`). That froze the iMac viewer on a click.
-        let double_clicked = response.double_clicked() && !self.pen_mode;
-        let (toggle_fs, toggle_stats, toggle_1to1, leave, toggle_remote) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::F) || double_clicked,
-                i.key_pressed(egui::Key::S),
-                i.key_pressed(egui::Key::Num1),
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::R),
-            )
-        });
+        let double_clicked = response.double_clicked() && !self.pen_mode && !menu_was_open;
+        let (mut toggle_fs, mut toggle_stats, mut toggle_1to1, esc, mut toggle_remote) =
+            ctx.input(|i| {
+                (
+                    i.key_pressed(egui::Key::F) || double_clicked,
+                    i.key_pressed(egui::Key::S),
+                    i.key_pressed(egui::Key::Num1),
+                    i.key_pressed(egui::Key::Escape),
+                    i.key_pressed(egui::Key::R),
+                )
+            });
+        let mut leave = esc && !menu_was_open;
+
+        // Corner icons: drawn last so they sit above the video's click area, and shown even
+        // when the rest of the overlay is hidden.
+        let corner = chrome::corner(ui, rect, MARGIN_TOP, self.pen_mode);
+        let mut toggle_pen = corner.pen_clicked;
+        let mut chosen_mode = None;
+        leave |= corner.disconnect_clicked;
+        let mut toggle_hide = false;
+        let mut pen_mode = self.pen_mode;
+        let (mut wacom, mut remote_only) = (
+            self.view_mode == ViewMode::Pen,
+            self.view_mode == ViewMode::Remote,
+        );
+        let (mut show_stats, mut powerpoint, mut hidden) = (
+            self.overlay.show_stats,
+            self.overlay.powerpoint,
+            self.overlay.hidden,
+        );
+        let (mut pixel_exact, mut fullscreen) = (self.pixel_exact, self.fullscreen);
+        egui::Popup::menu(&corner.menu)
+            .id(menu_id)
+            .align(egui::RectAlign::LEFT_START)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(240.0);
+                ui.style_mut().spacing.interact_size.y = 32.0;
+                toggle_pen |= ui.checkbox(&mut pen_mode, "Pen").changed();
+                toggle_remote |= ui
+                    .checkbox(&mut powerpoint, "PowerPoint mode (R)")
+                    .changed();
+                toggle_hide |= ui.checkbox(&mut hidden, "Hide").changed();
+                toggle_stats |= ui
+                    .checkbox(&mut show_stats, "Show statistics (S)")
+                    .changed();
+                if let Some(note) = &self.overlay_note {
+                    ui.colored_label(egui::Color32::LIGHT_RED, note);
+                }
+                ui.separator();
+                // The presenter sends and encodes no video in these two (protocol 12).
+                if ui.checkbox(&mut wacom, "Wacom pen (no video)").changed() {
+                    chosen_mode = Some(if wacom {
+                        ViewMode::Pen
+                    } else {
+                        ViewMode::Video
+                    });
+                }
+                if ui
+                    .checkbox(&mut remote_only, "PowerPoint remote only (no video)")
+                    .changed()
+                {
+                    chosen_mode = Some(if remote_only {
+                        ViewMode::Remote
+                    } else {
+                        ViewMode::Video
+                    });
+                }
+                ui.separator();
+                toggle_1to1 |= ui
+                    .checkbox(&mut pixel_exact, "1:1 pixel-exact display (1)")
+                    .changed();
+                toggle_fs |= ui
+                    .checkbox(&mut fullscreen, "Fullscreen (F / double-click)")
+                    .changed();
+            });
+        if let Some(mode) = chosen_mode {
+            self.set_view_mode(mode, &status);
+        } else if toggle_pen {
+            // "Wacom pen (no video)" has the pen on by definition: its toggle leaves the mode.
+            if self.view_mode == ViewMode::Pen {
+                self.set_view_mode(ViewMode::Video, &status);
+            } else {
+                self.set_pen(!self.pen_mode, &status);
+            }
+        }
+        if toggle_hide {
+            self.overlay.hidden = !self.overlay.hidden;
+        }
         if toggle_remote {
-            self.show_remote = !self.show_remote;
+            self.overlay.powerpoint = !self.overlay.powerpoint;
+            // Turning a part on (key or menu) while hidden shows the overlay again.
+            self.overlay.hidden &= !self.overlay.powerpoint;
         }
         if toggle_stats {
-            self.show_stats = !self.show_stats;
+            self.overlay.show_stats = !self.overlay.show_stats;
+            self.overlay.hidden &= !self.overlay.show_stats;
+            self.overlay_note = mirrorwire_net::settings::save_show_stats(
+                &self.config_dir,
+                self.overlay.show_stats,
+            )
+            .err()
+            .map(|e| {
+                tracing::warn!("saving Show statistics: {e:#}");
+                format!("Could not save this choice: {e:#}")
+            });
         }
         if toggle_1to1 {
             self.pixel_exact = !self.pixel_exact;
@@ -239,33 +329,15 @@ impl MirrorApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
 
-    /// The ☰ menu at the top right: the two no-video modes.
-    fn view_menu(&mut self, ctx: &egui::Context, status: &crate::viewer::ViewerStatus) {
-        let mut chosen = None;
-        egui::Area::new(egui::Id::unique("view_menu"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
-            .show(ctx, |ui| {
-                ui.menu_button(egui::RichText::new("☰").size(24.0), |ui| {
-                    let mut pen = self.view_mode == ViewMode::Pen;
-                    if ui.checkbox(&mut pen, "Wacom pen (no video)").changed() {
-                        chosen = Some(if pen { ViewMode::Pen } else { ViewMode::Video });
-                    }
-                    let mut remote = self.view_mode == ViewMode::Remote;
-                    if ui
-                        .checkbox(&mut remote, "PowerPoint remote only (no video)")
-                        .changed()
-                    {
-                        chosen = Some(if remote {
-                            ViewMode::Remote
-                        } else {
-                            ViewMode::Video
-                        });
-                    }
-                    ui.weak("Without video the presenter encodes and sends nothing.");
-                });
-            });
-        if let Some(mode) = chosen {
-            self.set_view_mode(mode, status);
+    /// Pen on or off; the presenter is told at once (protocol 12) so it asks its desktop for
+    /// pointer permission now, not on the first stroke.
+    fn set_pen(&mut self, on: bool, status: &crate::viewer::ViewerStatus) {
+        if on == self.pen_mode {
+            return;
+        }
+        self.pen_mode = on;
+        if let Some(tx) = &status.control {
+            let _ = tx.send(mirrorwire_proto::control::Control::PenMode { on });
         }
     }
 
@@ -279,10 +351,7 @@ impl MirrorApp {
         let pen_changed = pen != self.pen_mode && (pen || self.view_mode == ViewMode::Pen);
         self.view_mode = mode;
         if pen_changed {
-            self.pen_mode = pen;
-            if let Some(tx) = &status.control {
-                let _ = tx.send(mirrorwire_proto::control::Control::PenMode { on: pen });
-            }
+            self.set_pen(pen, status);
         }
     }
 
