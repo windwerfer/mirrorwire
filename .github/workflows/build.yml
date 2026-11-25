@@ -323,8 +323,10 @@ jobs:
         run: |
           ls -la artifacts
           # The Windows artifact is a folder (merge-multiple keeps it as a directory): zip it.
-          (cd artifacts && zip -qr MirrorWire-windows.zip MirrorWire-windows)
-          rm -rf artifacts/MirrorWire-windows
+          if [ -d artifacts/MirrorWire-windows ]; then
+            (cd artifacts && zip -qr MirrorWire-windows.zip MirrorWire-windows)
+            rm -rf artifacts/MirrorWire-windows
+          fi
           # Release notes = the matching CHANGELOG.md section (## <version>).
           ver="${GITHUB_REF_NAME#v}"
           awk -v v="$ver" '/^## /{p=($2==v)} p' CHANGELOG.md > notes.md
