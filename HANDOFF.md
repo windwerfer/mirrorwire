@@ -1,11 +1,14 @@
 # HANDOFF
 
-## Sonar coverage gate (2026-11-25, local commits, NOT pushed: no GitHub credentials on this box)
-- Gate failed only on new_coverage 69.7% (uncovered 3962 of 13083 new lines). `sonar-project.properties` exclusions fixed: the stale `gui.rs` pattern matched nothing; now `gui/{video,present,widgets,pen,miracast,scan}.rs` (egui drawing), `encode/vaapi.rs` (GPU), `miracast-nm/src/zbus_backend.rs` (system bus), `miracast-sink-demo.rs` (hardware demo) are excluded, each with a reason in the file. gui/mod.rs and gui/chrome.rs stay measured. Every pattern checked against a real file.
-- Estimate from the table (not a Sonar run): excluded lines 2089 (1475 gui + 207 + 238 + 169); uncovered about 1873 of about 10994 -> about 83%. Plus new tests in `encode/config.rs` (8 tests, was untested).
-- Local `cargo llvm-cov` with default features cannot build here (no pkg-config / FFmpeg / PipeWire dev); a filmcraft-only run works but its numbers differ from CI, so they were not used.
-- Not done: no push, so no CI/Sonar check. Further tests (settings, protocol, remote.rs, camera.rs, miracast.rs) not added; rc.rs needs FFmpeg to build.
-- Next: push (`git pull --rebase`, push), wait for CI + SonarCloud, check the quality gate API.
+## Sonar coverage gate (2026-11-25, local commits on main, NOT pushed: manager pushes)
+- Gate failed only on new_coverage 69.7% (3962 uncovered of 13083 new lines). Not yet re-measured by Sonar (nothing pushed).
+- Local estimate (default features + filmcraft, `cargo llvm-cov` ratios applied to the files of coverage-before.txt, exclusions removed): about 1250 uncovered of about 10170 = **about 87.7%** (79.4% before the filmcraft change, 81.3% after it, before the extra tests/exclusions). Crude: per-file ratio, not Sonar's new-line set.
+- CI fix: the SonarCloud job ran `cargo llvm-cov --workspace` without `filmcraft`, so tests behind that feature (Miracast end to end, FilmCraft decode, presenter/viewer paths) never ran. Now `--features mirrorwire-app/filmcraft`.
+- `sonar-project.properties` exclusions (each with a reason in the file; the stale `gui.rs` pattern matched nothing and is gone; every pattern was checked against a real file): gui/{mod,video,present,widgets,pen,miracast,scan}.rs, encode/vaapi.rs, miracast-nm zbus_backend.rs, miracast-sink-demo.rs, source/camera/scanner.rs, source/remote/calls.rs, plus the old yuv_glow/portal/hw/firewall system/android patterns. gui/chrome.rs stays measured.
+- Refactors (moves only): PipeWire scanner out of camera.rs into `camera/scanner.rs`; portal RemoteDesktop calls out of remote.rs into `remote/calls.rs`. Pure parts stay and keep their tests.
+- Tests added: encode/config.rs (8), gui/chrome.rs headless egui (layout, clicks, icon painting; egui runs on a plain Context), xtask (layers on real and fake trees, run, report parsing), gui/mod.rs helpers. Protocol 12 (pen_mode, video_paused, version rejection), InputForward/RemoteRoute stall, settings and viewer-menu state already had tests; not duplicated. Android chrome.rs only compiles on Android (not in lcov).
+- Gates run locally: fmt, `cargo xtask ci` (loopback p95 16.2 ms <= 40), deny, android clippy: ok. `cargo audit`: only an allowed warning (see its output).
+- Next: push, wait for CI + SonarCloud, check the quality gate API; if still < 80%, `component_tree` and add tests for presenter/mod.rs, encode/ffmpeg.rs, transport/presenter.rs.
 
 ## Release 0.2.2 prep (2026-11-25, branch `release-0.2.2`, local only: not pushed, not tagged)
 - Version 0.2.2, versionCode 2002 (`major*1e6+minor*1e3+patch`; Cargo.toml `[workspace.metadata.android] version_code` must match, the script checks). Dev app = code + 2000000000 (own package id).
