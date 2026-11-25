@@ -9,7 +9,11 @@
 #           MIRRORWIRE_KEYSTORE=path (a debug key is generated when missing),
 #           MIRRORWIRE_KS_PASS / MIRRORWIRE_KEY_PASS / MIRRORWIRE_KEY_ALIAS for a
 #           release key (default: the debug key's "android" / androiddebugkey),
-#           VERSION_CODE (default 1).
+#           VERSION_CODE (default 1),
+#           MIRRORWIRE_PROFILE=release|dev (default release; dev = cargo's unoptimised dev
+#           profile, faster to build for local testing, installed next to the release app as
+#           its own app: id io.github.windwerfer.mirrorwire.dev, label "MirrorWire Dev",
+#           file MirrorWire-dev-<abi>.apk).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -28,11 +32,21 @@ done
 
 VERSION_NAME="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n1)"
 VERSION_CODE="${VERSION_CODE:-1}"
+# The Java class stays io.github.windwerfer.mirrorwire.MainActivity in both; only the dev app
+# id is renamed (aapt2 --rename-manifest-package keeps component names pointing at it).
+case "${MIRRORWIRE_PROFILE:-release}" in
+  release) PROFILE_ARGS=(--release) RENAME_ARGS=() LABEL=MirrorWire APK_NAME="MirrorWire-$ABI.apk" ;;
+  dev)
+    PROFILE_ARGS=() RENAME_ARGS=(--rename-manifest-package io.github.windwerfer.mirrorwire.dev)
+    LABEL="MirrorWire Dev" APK_NAME="MirrorWire-dev-$ABI.apk"
+    ;;
+  *) echo "MIRRORWIRE_PROFILE must be release or dev, not ${MIRRORWIRE_PROFILE}" >&2; exit 1 ;;
+esac
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-echo "== Rust library ($ABI)"
-(cd "$ROOT" && cargo ndk -t "$ABI" --platform 26 -o "$WORK/apk/lib" build --release --locked -p mirrorwire-android)
+echo "== Rust library ($ABI, ${MIRRORWIRE_PROFILE:-release} profile)"
+(cd "$ROOT" && cargo ndk -t "$ABI" --platform 26 -o "$WORK/apk/lib" build "${PROFILE_ARGS[@]}" --locked -p mirrorwire-android)
 SO="$WORK/apk/lib/$ABI/libmirrorwire_android.so"
 [ -f "$SO" ] || { echo "cargo-ndk did not produce $SO" >&2; exit 1; }
 "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-strip --strip-debug "$SO"
@@ -49,8 +63,11 @@ mkdir -p "$WORK/res/mipmap-xxxhdpi"
 cp "$ROOT/packaging/icons/io.github.windwerfer.MirrorWire.png" "$WORK/res/mipmap-xxxhdpi/ic_launcher.png"
 "$BT/aapt2" compile --dir "$WORK/res" -o "$WORK/res.zip"
 sed -e "s/@VERSION_CODE@/$VERSION_CODE/" -e "s/@VERSION_NAME@/$VERSION_NAME/" \
+  -e "s/android:label=\"MirrorWire\"/android:label=\"$LABEL\"/" \
   "$HERE/AndroidManifest.xml" > "$WORK/AndroidManifest.xml"
-"$BT/aapt2" link -o "$WORK/unsigned.apk" -I "$ANDROID_JAR" \
+grep -q "android:label=\"$LABEL\"" "$WORK/AndroidManifest.xml" \
+  || { echo "could not set the app label in AndroidManifest.xml" >&2; exit 1; }
+"$BT/aapt2" link -o "$WORK/unsigned.apk" -I "$ANDROID_JAR" "${RENAME_ARGS[@]}" \
   --manifest "$WORK/AndroidManifest.xml" "$WORK/res.zip"
 
 echo "== Package"
@@ -76,7 +93,7 @@ if [ ! -f "$KEYSTORE" ]; then
     -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
     -dname "CN=MirrorWire Debug,O=MirrorWire,C=DE" >/dev/null
 fi
-APK="$OUT/MirrorWire-$ABI.apk"
+APK="$OUT/$APK_NAME"
 # Passwords go through env: so they never show up in the process list or logs.
 export MIRRORWIRE_KS_PASS="${MIRRORWIRE_KS_PASS:-android}"
 export MIRRORWIRE_KEY_PASS="${MIRRORWIRE_KEY_PASS:-$MIRRORWIRE_KS_PASS}"
