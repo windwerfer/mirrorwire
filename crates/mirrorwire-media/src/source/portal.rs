@@ -410,11 +410,21 @@ async fn plan_cast(proxy: &Screencast, opts: &PortalOptions) -> CastPlan {
     }
 }
 
-fn select_options(plan: &CastPlan, token: Option<&str>) -> SelectSourcesOptions {
+/// Sources for a screen cast on a RemoteDesktop session (the combined session). No
+/// persistence options: the portal docs say they "must not be used with a remote desktop
+/// session" (persistence goes through `RemoteDesktop.SelectDevices`), and the portal rejects
+/// the request otherwise ("Remote desktop sessions cannot persist"). That rejection made the
+/// combined session fail on every desktop, so input always fell back to the separate injector.
+fn cast_options(plan: &CastPlan) -> SelectSourcesOptions {
     SelectSourcesOptions::default()
         .set_cursor_mode(plan.cursor_mode)
         .set_sources(plan.sources)
         .set_multiple(false)
+}
+
+/// Sources for a plain ScreenCast session, kept with a restore token.
+fn select_options(plan: &CastPlan, token: Option<&str>) -> SelectSourcesOptions {
+    cast_options(plan)
         .set_persist_mode(PersistMode::ExplicitlyRevoked)
         .set_restore_token(token)
 }
@@ -523,10 +533,29 @@ async fn start_combined(
         bail!("the RemoteDesktop portal offers no keyboard and pointer ({available:?})");
     }
     let session = remote.create_session(Default::default()).await?;
+    match negotiate_combined(&remote, &session, cast, plan, input).await {
+        Ok((info, fd)) => Ok((remote, session, info, fd)),
+        Err(e) => {
+            // A refused or half-set-up session is closed, not left open in the portal.
+            let _ = tokio::time::timeout(INPUT_TIMEOUT, session.close()).await;
+            Err(e)
+        }
+    }
+}
+
+type StreamInfo = (u32, Option<(i32, i32)>);
+
+async fn negotiate_combined(
+    remote: &RemoteDesktop,
+    session: &Session<RemoteDesktop>,
+    cast: &Screencast,
+    plan: &CastPlan,
+    input: &InputOptions,
+) -> Result<(StreamInfo, OwnedFd)> {
     let token = read_token(&input.restore_token_path).await;
     remote
         .select_devices(
-            &session,
+            session,
             SelectDevicesOptions::default()
                 .set_devices(DeviceType::KEYBOARD | DeviceType::POINTER)
                 .set_persist_mode(PersistMode::ExplicitlyRevoked)
@@ -534,11 +563,11 @@ async fn start_combined(
         )
         .await?
         .response()?;
-    cast.select_sources(&session, select_options(plan, token.as_deref()))
+    cast.select_sources(session, cast_options(plan))
         .await?
         .response()?;
     let started = remote
-        .start(&session, None, Default::default())
+        .start(session, None, Default::default())
         .await?
         .response()
         .context("screen share and remote access were cancelled or denied")?;
@@ -546,25 +575,22 @@ async fn start_combined(
         .devices()
         .contains(DeviceType::KEYBOARD | DeviceType::POINTER)
     {
-        let _ = session.close().await;
         bail!("keyboard and pointer access were not granted");
     }
     let Some(stream) = started.streams().first() else {
-        let _ = session.close().await;
         bail!("the portal returned no streams");
     };
     let info = (stream.pipe_wire_node_id(), stream.size());
     if info.1.is_none() {
-        let _ = session.close().await;
         bail!("the portal did not tell the stream size");
     }
     if let Some(t) = started.restore_token() {
         write_token(&input.restore_token_path, t).await?;
     }
     let fd = cast
-        .open_pipe_wire_remote(&session, Default::default())
+        .open_pipe_wire_remote(session, Default::default())
         .await?;
-    Ok((remote, session, info, fd))
+    Ok((info, fd))
 }
 
 /// Choose what to ask the portal for. Metadata falls back to embedded when
