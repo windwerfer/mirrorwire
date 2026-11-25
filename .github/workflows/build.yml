@@ -82,7 +82,7 @@ jobs:
         run: packaging/build-ffmpeg.sh "$FFMPEG_PREFIX"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: stable
+          toolchain: 1.100.0
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -154,7 +154,7 @@ jobs:
             libxkbcommon-dev libwayland-dev file
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: stable
+          toolchain: 1.100.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: appimage
@@ -217,7 +217,7 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: stable
+          toolchain: 1.100.0
           targets: aarch64-linux-android
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -244,12 +244,23 @@ jobs:
             echo "::warning::KEYSTORE_BASE64 not set, signing with a throwaway debug key"
           fi
       - name: Build APK
+        # versionCode comes from the Cargo version (2002 for 0.2.2), SOURCE_DATE_EPOCH from the
+        # commit time; both are computed by build-apk.sh.
         env:
-          VERSION_CODE: ${{ github.run_number }}
           MIRRORWIRE_KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
           MIRRORWIRE_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
           MIRRORWIRE_KEY_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
         run: packaging/android/build-apk.sh dist
+      - name: Reproducibility check (unsigned rebuild must accept the APK's signature)
+        # Same commit, a different target directory; apksigcopier copies the release signature
+        # onto the rebuilt unsigned APK and apksigner must verify it (the flow F-Droid uses).
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet apksigcopier==1.1.1
+          CARGO_TARGET_DIR="$RUNNER_TEMP/rb-target" MIRRORWIRE_UNSIGNED=1 \
+            packaging/android/build-apk.sh "$RUNNER_TEMP/rb-out"
+          PATH="$ANDROID_HOME/build-tools/35.0.0:$PATH" "$RUNNER_TEMP/venv/bin/apksigcopier" compare \
+            dist/MirrorWire-arm64-v8a.apk --unsigned "$RUNNER_TEMP/rb-out/MirrorWire-arm64-v8a-unsigned.apk"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           path: dist/MirrorWire-arm64-v8a.apk
@@ -276,7 +287,7 @@ jobs:
           "$env:FFMPEG_DIR\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: stable
+          toolchain: 1.100.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: windows
