@@ -12,8 +12,11 @@ Prints one totals line per file (frozen frames summed over the averaged rows, me
 cuts summed, soft failures), then every row that differs between the first two files.
 Burst rows (the unpaced baseline of the keyframe test) are left out.
 """
+import os
 import re
 import sys
+import tempfile
+from pathlib import Path
 
 MEAN = re.compile(
     r"(.*?): (paced|fresh|resumed) Mean \{ cuts: ([\d.]+), lost_frames: ([\d.]+), "
@@ -25,9 +28,26 @@ SINGLE = re.compile(
 )
 
 
+def safe_input(arg):
+    """Resolve a command-line path and accept it only inside an allowed base directory.
+
+    Allowed: the current directory, the repository, the system temp directory (the run scripts
+    log to /tmp) and any directory listed in MIRRORWIRE_SCRIPT_BASE (os.pathsep separated).
+    Anything else, or a path that is not a regular file, ends the script with an error.
+    """
+    bases = [Path.cwd(), Path(__file__).resolve().parent.parent, Path(tempfile.gettempdir())]
+    bases += [Path(b) for b in os.environ.get("MIRRORWIRE_SCRIPT_BASE", "").split(os.pathsep) if b]
+    resolved = Path(os.path.realpath(arg))
+    if not any(resolved.is_relative_to(os.path.realpath(b)) for b in bases):
+        sys.exit(f"{arg}: outside the allowed directories (cwd, repo, temp, MIRRORWIRE_SCRIPT_BASE)")
+    if not resolved.is_file():
+        sys.exit(f"{arg}: not a regular file")
+    return resolved
+
+
 def parse(path):
     rows, totals = {}, {"frozen": 0.0, "video": 0.0, "cuts": 0.0, "n": 0}
-    text = open(path, errors="replace").read()
+    text = safe_input(path).read_text(errors="replace")
     for line in text.split("\n"):
         if m := MEAN.match(line):
             cuts, lost_fr, video, lost, frozen, lag = map(float, m.groups()[2:])

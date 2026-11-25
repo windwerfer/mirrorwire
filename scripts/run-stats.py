@@ -15,12 +15,31 @@ import os
 import re
 import statistics as st
 import sys
+import tempfile
+from pathlib import Path
 
 STATS = re.compile(r" presenter: [\d.]+ fps")
 
 
+def safe_input(arg):
+    """Resolve a command-line path and accept it only inside an allowed base directory.
+
+    Allowed: the current directory, the repository, the system temp directory (the run scripts
+    log to /tmp) and any directory listed in MIRRORWIRE_SCRIPT_BASE (os.pathsep separated).
+    Anything else, or a path that is not a regular file, ends the script with an error.
+    """
+    bases = [Path.cwd(), Path(__file__).resolve().parent.parent, Path(tempfile.gettempdir())]
+    bases += [Path(b) for b in os.environ.get("MIRRORWIRE_SCRIPT_BASE", "").split(os.pathsep) if b]
+    resolved = Path(os.path.realpath(arg))
+    if not any(resolved.is_relative_to(os.path.realpath(b)) for b in bases):
+        sys.exit(f"{arg}: outside the allowed directories (cwd, repo, temp, MIRRORWIRE_SCRIPT_BASE)")
+    if not resolved.is_file():
+        sys.exit(f"{arg}: not a regular file")
+    return resolved
+
+
 def summarise(path):
-    lines = open(path, errors="replace").read().split("\n")
+    lines = safe_input(path).read_text(errors="replace").split("\n")
     rows = [l for l in lines if STATS.search(l) and "viewer queue" in l]
     num = lambda pat, l: re.search(pat, l)
     video = [float(num(r"fps, ([\d.]+) Mbit/s", l).group(1)) for l in rows]
@@ -54,9 +73,11 @@ def probe_part(lines):
 
 
 def viewer(logcat):
-    if not os.path.exists(logcat):
-        return ""
-    lines = [l for l in open(logcat, errors="replace") if " shown " in l and " fps" in l]
+    try:
+        text = safe_input(logcat).read_text(errors="replace")
+    except SystemExit:
+        return ""  # no .logcat next to the log (or not a regular file)
+    lines = [l for l in text.split("\n") if " shown " in l and " fps" in l]
     shown = [float(m.group(1)) for l in lines if (m := re.search(r"shown ([\d.]+) fps", l))]
     waiting = sum(int(m.group(1)) for l in lines if (m := re.search(r"waiting key (\d+)/s", l)))
     frozen = sum("Picture frozen" in l for l in lines)
