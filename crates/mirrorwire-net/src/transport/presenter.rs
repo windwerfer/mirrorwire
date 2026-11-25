@@ -384,6 +384,7 @@ async fn handle_viewer(incoming: quinn::Incoming, shared: Arc<SessionShared>) ->
     let mut keyframe_gate = KeyframeGate::default();
     let mut remote_gate = TapGate::default();
     let mut pointer_gate = PointerGate::default();
+    let mut input_forward = InputForward::default();
     let result = async {
         loop {
             let msg = match read_msg(&mut recv).await {
@@ -391,6 +392,9 @@ async fn handle_viewer(incoming: quinn::Incoming, shared: Arc<SessionShared>) ->
                 Err(_) if conn.close_reason().is_some() => return Ok(()),
                 Err(e) => return Err(e),
             };
+            if let Some(tx) = &shared.remote_keys {
+                input_forward.retry(tx);
+            }
             if let Some(quiet) = shared.fec.heard_from_viewer() {
                 // The video was paused: start again from a keyframe.
                 tracing::info!(
@@ -428,7 +432,7 @@ async fn handle_viewer(incoming: quinn::Incoming, shared: Arc<SessionShared>) ->
                 Control::RemoteKey { key } => {
                     if let Some(tx) = &shared.remote_keys {
                         if remote_gate.allow(Instant::now()) {
-                            let _ = tx.try_send(RemoteInput::Key(key));
+                            input_forward.forward(tx, RemoteInput::Key(key));
                         }
                     }
                 }
@@ -440,19 +444,15 @@ async fn handle_viewer(incoming: quinn::Incoming, shared: Arc<SessionShared>) ->
                 } => {
                     if let Some(tx) = &shared.remote_keys {
                         if pointer_gate.allow(phase, Instant::now()) {
-                            // A full channel drops a move (a newer one follows); a lost
-                            // up would leave the button stuck, so ups wait for room.
-                            let input = RemoteInput::Pointer {
-                                phase,
-                                x,
-                                y,
-                                pressure,
-                            };
-                            if phase == PointerPhase::Move {
-                                let _ = tx.try_send(input);
-                            } else {
-                                let _ = tx.send(input).await;
-                            }
+                            input_forward.forward(
+                                tx,
+                                RemoteInput::Pointer {
+                                    phase,
+                                    x,
+                                    y,
+                                    pressure,
+                                },
+                            );
                         }
                     }
                 }
@@ -904,6 +904,113 @@ impl PointerGate {
                 self.edges <= Self::EDGES_PER_SECOND
             }
         }
+    }
+}
+
+/// Hands remote input to the app without ever waiting. This runs on the control reader, the
+/// only place that notices the viewer is still there; if it waited for a slow or stuck input
+/// path (a portal dialog, a hung injector), the viewer would look silent after
+/// [`super::link::VIEWER_SILENT`] and the send loop would pause the video until a restart
+/// (owner report t316u). A full channel drops moves and presses; a release that did not fit
+/// is held and retried on every later control message (the viewer pings 4x a second), so a
+/// button cannot stay stuck once the input path catches up.
+#[derive(Default)]
+struct InputForward {
+    held_up: Option<RemoteInput>,
+    dropped: u64,
+}
+
+impl InputForward {
+    fn retry(&mut self, tx: &mpsc::Sender<RemoteInput>) {
+        if let Some(up) = self.held_up.take() {
+            self.offer(tx, up);
+        }
+    }
+
+    fn forward(&mut self, tx: &mpsc::Sender<RemoteInput>, input: RemoteInput) {
+        self.retry(tx);
+        if self.held_up.is_some() {
+            // Still no room: a newer release replaces the held one, the rest is dropped.
+            if is_release(&input) {
+                self.held_up = Some(input);
+            } else {
+                self.note_drop();
+            }
+            return;
+        }
+        self.offer(tx, input);
+    }
+
+    fn offer(&mut self, tx: &mpsc::Sender<RemoteInput>, input: RemoteInput) {
+        match tx.try_send(input) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(input)) if is_release(&input) => {
+                self.held_up = Some(input);
+            }
+            Err(_) => self.note_drop(),
+        }
+    }
+
+    fn note_drop(&mut self) {
+        self.dropped += 1;
+        if self.dropped == 1 || self.dropped.is_power_of_two() {
+            tracing::warn!(
+                "remote input dropped: the input path is not keeping up ({} so far); video continues",
+                self.dropped
+            );
+        }
+    }
+}
+
+fn is_release(input: &RemoteInput) -> bool {
+    matches!(
+        input,
+        RemoteInput::Pointer {
+            phase: PointerPhase::Up,
+            ..
+        }
+    )
+}
+
+#[cfg(test)]
+mod input_forward_tests {
+    use super::*;
+
+    fn ptr(phase: PointerPhase, x: u16) -> RemoteInput {
+        RemoteInput::Pointer {
+            phase,
+            x,
+            y: 0,
+            pressure: None,
+        }
+    }
+
+    #[test]
+    fn a_full_channel_never_blocks_and_a_release_is_delivered_later() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut f = InputForward::default();
+        f.forward(&tx, ptr(PointerPhase::Down, 1));
+        // Full from here on: every call returns at once.
+        f.forward(&tx, ptr(PointerPhase::Move, 2));
+        f.forward(&tx, ptr(PointerPhase::Up, 3));
+        f.forward(&tx, ptr(PointerPhase::Down, 4));
+        f.forward(&tx, ptr(PointerPhase::Up, 5));
+        assert_eq!(f.dropped, 2);
+        assert_eq!(rx.try_recv().ok(), Some(ptr(PointerPhase::Down, 1)));
+        // The input path caught up: the next control message delivers the newest release.
+        f.retry(&tx);
+        assert_eq!(rx.try_recv().ok(), Some(ptr(PointerPhase::Up, 5)));
+        assert!(f.held_up.is_none());
+    }
+
+    #[test]
+    fn a_closed_channel_is_dropped_quietly() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let mut f = InputForward::default();
+        f.forward(&tx, ptr(PointerPhase::Up, 1));
+        assert!(f.held_up.is_none());
+        assert_eq!(f.dropped, 1);
     }
 }
 
