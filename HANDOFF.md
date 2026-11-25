@@ -1,5 +1,10 @@
 # HANDOFF
 
+## Branch viewer-menu (2026-11-25, local commits only, not pushed, not merged)
+- Hamburger overlay for all viewers: top-right corner icons ☰ / pen / disconnect, always shown (also after Hide). The menu has Pen, PowerPoint mode, Hide, Show statistics; the desktop menu also 1:1 and Fullscreen. Android's Disconnect/Pen text buttons and the desktop's Pen button in the remote row are gone. Icons are painter-drawn shapes (`chrome.rs`, one copy per viewer crate), no icon files.
+- Show statistics is persisted in `settings.json` (`show_stats`, on unless `"off"`), desktop in the config dir, Android in the app data dir.
+- Not hardware-tested (no tablet, no GUI run in the container). See the checklist line in testing.md §4.
+
 ## Release status (2026-11-25)
 - v0.2.0 (tag 3161a39 -> 5d27d7c) was tagged but never released: Audit failed on RUSTSEC-2026-0592 (url 2.5.8), so no GitHub Release exists for it. The tag is untouched.
 - v0.2.1 (commit 88192b2a3c43cf4e5bd2f47be85ecff0f6376894, annotated tag v0.2.1) is the first published 0.2 release: https://github.com/windwerfer/mirrorwire/releases/tag/v0.2.1

@@ -606,7 +606,12 @@ screen**, not logs. So:
 
 - Every state and error must be readable in the window: presenter status panel (phase,
   listen address, encoder, source, fingerprint, pairing code, connected viewer) and viewer
-  connection status and stats overlay (`S`).
+  connection status and stats overlay (`S`, or Show statistics in the ☰ menu; saved, on
+  by default).
+- Viewer menu (branch `viewer-menu`), not run on hardware yet: on the tablet and the
+  desktop viewer, the corner shows ☰ / pen / disconnect also after Hide; Show statistics
+  off survives a restart; Hide leaves it unchanged; the tap that closes the menu neither
+  hides the overlay nor draws on the presenter in pen mode.
 - Error messages say what to do ("No answer from 192.168.1.20:47800 (UDP). … On Fedora:
   sudo firewall-cmd --add-port=47800/udp"), not just what failed.
 - Ask for exactly what you need ("press S and photograph the top-left corner").

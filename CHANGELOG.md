@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Changed
+- Viewers (Android and desktop): the top-right corner of the video always shows three icons,
+  menu (☰), Pen and Disconnect, replacing Android's Disconnect and Pen text buttons and the
+  desktop's Pen button in the remote row. The menu holds Pen, PowerPoint mode (the
+  presenter-remote row), Hide (stats and that row; the icons stay) and Show statistics; the
+  desktop menu also has 1:1 pixel-exact display and Fullscreen. Keys `S`, `R`, `1`, `F`,
+  `Esc` are unchanged (Esc closes an open menu first).
+- Show statistics is saved in `settings.json` (`show_stats`, on by default; missing or
+  unreadable means on).
+- Android: picture warnings (GPU error, stall, stale picture) stay visible when the stats are
+  off or the overlay is hidden.
+- Not tested on hardware yet.
+
 ## 0.2.1
 
 First published release of the 0.2 series. v0.2.0 was tagged but never released: its Audit job

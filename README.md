@@ -92,7 +92,12 @@ viewer M; update the viewer …` (or presenter). Update both from the same `main
 **Android viewer.** Install the APK, open MirrorWire, and either tap a presenter in the
 list (same Wi-Fi), type the 6-digit pairing code on the keypad the first time, or scan the
 presenter's QR code with the phone's camera app: the `mirrorwire://` link opens MirrorWire
-and connects. Tap the video to show or hide the stats and **Disconnect**. The stats say
+and connects. Over the video, the top-right corner always shows three icons: the menu
+(☰), **Pen** and **Disconnect**. The menu has Pen, PowerPoint mode (the Previous / Next /
+Click / Escape row at the bottom, on by default), **Hide** (hides the stats and that row; the
+corner icons stay) and **Show statistics** (on by default; the choice is saved in
+`settings.json` for the next start). Outside pen mode, a tap on the video also hides or shows
+the stats and the row. Warnings about a stalled or stale picture stay visible either way. The stats say
 which decoder the phone uses (`hardware decoder …`, or `SOFTWARE decoder FilmCraft (pure Rust)`
 when no hardware decoder works, with the reason a hardware one was skipped, and `GPU output` or `CPU copy` for how pictures reach the screen),
 the decode time, and `in / decoded / shown fps`; if the picture
@@ -313,10 +318,13 @@ back to software (`--software-decode` forces it). A 2011 HD 6770M on
 OCLP may not expose VT H.264. The OpenGL (glow) path converts YUV→RGB in a
 shader instead of CPU swscale. On an old Intel Mac without Metal, the viewer defaults to OpenGL;
 `--renderer wgpu` tries Metal first.
- Keys in the viewer: `F` or double-click
-for fullscreen, `S` toggles stats, `R` shows presenter-remote buttons (Previous / Next / Click / Escape: the Linux presenter taps Left / Right / Space / Esc through the RemoteDesktop portal and asks for keyboard permission on the first tap; on Android the buttons show with the tap overlay). The **Pen** button next to them turns your pen, finger or mouse into the presenter's pointer (press = left button, drag = drag; Mirror and Extend: capture and input share one portal session, so the first share dialog also asks for keyboard and pointer permission; if that combined session is refused, pen/touch falls back to a separate session and works in Mirror mode only), `1` toggles 1:1 pixel-exact display (nearest
+ The top-right corner of the video always shows three icons, the same as on Android:
+the menu (☰), **Pen** and **Disconnect**. The menu holds Pen, PowerPoint mode, Hide, Show
+statistics, 1:1 pixel-exact display and Fullscreen (Esc or a click outside closes it). Keys in
+the viewer: `F` or double-click (not in pen mode)
+for fullscreen, `S` toggles stats (on by default; the choice is saved in `settings.json`), `R` toggles PowerPoint mode, the presenter-remote buttons (Previous / Next / Click / Escape: the Linux presenter taps Left / Right / Space / Esc through the RemoteDesktop portal and asks for keyboard permission on the first tap). **Hide** in the menu hides the stats and those buttons but not the corner icons; turning stats or PowerPoint mode on shows the overlay again. The **Pen** icon turns your pen, finger or mouse into the presenter's pointer (press = left button, drag = drag; Mirror and Extend: capture and input share one portal session, so the first share dialog also asks for keyboard and pointer permission; if that combined session is refused, pen/touch falls back to a separate session and works in Mirror mode only), `1` toggles 1:1 pixel-exact display (nearest
 neighbour, one stream pixel = one framebuffer pixel, taking `pixels_per_point`
-into account), `Esc` disconnects. The stats overlay shows native resolution,
+into account), `Esc` disconnects (or only closes the menu when it is open). The stats overlay shows native resolution,
 source fps (portal may send only damage, so this can be well below the configured
 fps), bitrate, decode time, and the window/texture scale factor. The video texture
 is the stream's native size; fit-to-window uses linear filtering.
