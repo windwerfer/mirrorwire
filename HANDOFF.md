@@ -1,5 +1,8 @@
 # HANDOFF
 
+## Flaky nack test (2026-11-25)
+- `nack_makes_the_presenter_resend_a_lost_fragment` asserted `resent_useful == 1`. A stall (>15 ms, TAIL_QUIET_US) mid-frame makes the viewer NACK fragments that are only late; their resends can land first and fill gaps too, so useful > 1 legitimately (CI log of run 44990072133: requested 22, resent_received 22, resent_useful 2). Not a Reassembler bug (useful counts only new fills). Test now asserts requested >= 1 and 1 <= useful <= resent_received, frame bytes equal. Not reproducible on this Linux box (0/400, also under load).
+
 ## Sonar coverage gate (2026-11-25, local commits on main, NOT pushed: manager pushes)
 - Gate failed only on new_coverage 69.7% (3962 uncovered of 13083 new lines). Not yet re-measured by Sonar (nothing pushed).
 - Local estimate (default features + filmcraft, `cargo llvm-cov` ratios applied to the files of coverage-before.txt, exclusions removed): about 1250 uncovered of about 10170 = **about 87.7%** (79.4% before the filmcraft change, 81.3% after it, before the extra tests/exclusions). Crude: per-file ratio, not Sonar's new-line set.

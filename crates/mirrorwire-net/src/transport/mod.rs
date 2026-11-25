@@ -713,12 +713,14 @@ mod tests {
         .expect("frame completed by a resend");
         assert!(nacked);
         assert_eq!(frame.data, payload);
+        // The dropped fragment never arrives on its own, so the frame can only have completed
+        // through a resend that filled the gap. How many resends were useful is not fixed: a
+        // scheduling stall (seen on Windows runners) makes the viewer NACK fragments that are
+        // merely late, and their resends may land before the originals and fill gaps too.
         let s = r.nack_stats();
-        assert_eq!(
-            (s.resent_received >= 1, s.resent_useful),
-            (true, 1),
-            "{s:?}"
-        );
+        assert!(s.requested >= 1, "{s:?}");
+        assert!(s.resent_received >= 1, "{s:?}");
+        assert!((1..=s.resent_received).contains(&s.resent_useful), "{s:?}");
         viewer.close();
         presenter.close();
         std::fs::remove_dir_all(&dir).ok();
