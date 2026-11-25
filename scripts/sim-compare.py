@@ -37,8 +37,8 @@ def safe_input(arg):
     """
     bases = [Path.cwd(), Path(__file__).resolve().parent.parent, Path(tempfile.gettempdir())]
     bases += [Path(b) for b in os.environ.get("MIRRORWIRE_SCRIPT_BASE", "").split(os.pathsep) if b]
-    resolved = Path(os.path.realpath(arg))
-    if not any(resolved.is_relative_to(os.path.realpath(b)) for b in bases):
+    resolved = Path(arg).resolve()
+    if not any(resolved.is_relative_to(b.resolve()) for b in bases):
         sys.exit(f"{arg}: outside the allowed directories (cwd, repo, temp, MIRRORWIRE_SCRIPT_BASE)")
     if not resolved.is_file():
         sys.exit(f"{arg}: not a regular file")
