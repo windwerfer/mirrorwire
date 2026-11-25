@@ -1,11 +1,12 @@
-//! Small persisted presenter settings (`settings.json` in the config dir).
+//! Small persisted settings (`settings.json` in the config dir): presenter choices and
+//! the viewer's "Show statistics".
 
 use anyhow::{Context, Result};
 use mirrorwire_proto::DEFAULT_PORT;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Presenter preferences that survive a restart.
+/// Presenter and viewer preferences that survive a restart.
 ///
 /// Unknown fields are ignored; a missing field takes its default.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +35,10 @@ pub struct Settings {
     /// Off when missing or unreadable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pen_pressure: Option<String>,
+    /// Viewer: the statistics HUD over the video, `on` or `off`. On when missing or
+    /// unreadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_stats: Option<String>,
 }
 
 impl Settings {
@@ -107,6 +112,23 @@ pub fn save_pen_pressure(config_dir: &Path, on: bool) -> Result<()> {
         return Ok(());
     }
     settings.pen_pressure = Some(value.to_owned());
+    settings.save(config_dir)
+}
+
+/// The viewer's saved "Show statistics" choice. On unless `settings.json` says `off`
+/// (missing, junk or an unreadable file all mean on).
+pub fn show_stats_saved(config_dir: &Path) -> bool {
+    Settings::load(config_dir).show_stats.as_deref() != Some("off")
+}
+
+/// Persist the viewer's "Show statistics" choice, keeping every other setting.
+pub fn save_show_stats(config_dir: &Path, on: bool) -> Result<()> {
+    let mut settings = Settings::load(config_dir);
+    let value = if on { "on" } else { "off" };
+    if settings.show_stats.as_deref() == Some(value) {
+        return Ok(());
+    }
+    settings.show_stats = Some(value.to_owned());
     settings.save(config_dir)
 }
 
@@ -214,6 +236,7 @@ mod tests {
             fec: Some("20%".into()),
             adaptive_bitrate: Some("on".into()),
             pen_pressure: Some("on".into()),
+            show_stats: Some("off".into()),
         };
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);
@@ -263,6 +286,39 @@ mod tests {
         assert!(!pen_pressure_saved(&dir));
         std::fs::write(Settings::path(&dir), b"{not json").unwrap();
         assert!(!pen_pressure_saved(&dir));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn show_stats_is_on_by_default_and_persists() {
+        let dir = temp_dir();
+        assert!(show_stats_saved(&dir));
+        save_port(&dir, 47555).unwrap();
+        save_pen_pressure(&dir, true).unwrap();
+        save_capture(&dir, "extend", "embedded", "30", "auto", true).unwrap();
+        save_show_stats(&dir, false).unwrap();
+        assert!(!show_stats_saved(&dir));
+        // Other settings survive the stats choice, and the stats choice survives them.
+        let s = Settings::load(&dir);
+        assert_eq!(s.port, Some(47555));
+        assert_eq!(s.pen_pressure.as_deref(), Some("on"));
+        assert_eq!(s.mode.as_deref(), Some("extend"));
+        assert_eq!(s.cursor.as_deref(), Some("embedded"));
+        save_pen_pressure(&dir, false).unwrap();
+        assert!(!show_stats_saved(&dir));
+        save_show_stats(&dir, true).unwrap();
+        assert!(show_stats_saved(&dir));
+        assert_eq!(Settings::load(&dir).show_stats.as_deref(), Some("on"));
+        assert_eq!(Settings::load(&dir).port, Some(47555));
+        // Junk, a wrong type, or a broken file means on, never a crash.
+        std::fs::write(Settings::path(&dir), r#"{"show_stats": "maybe"}"#).unwrap();
+        assert!(show_stats_saved(&dir));
+        std::fs::write(Settings::path(&dir), r#"{"show_stats": false}"#).unwrap();
+        assert!(show_stats_saved(&dir));
+        std::fs::write(Settings::path(&dir), b"{not json").unwrap();
+        assert!(show_stats_saved(&dir));
+        std::fs::remove_file(Settings::path(&dir)).unwrap();
+        assert!(show_stats_saved(&dir));
         std::fs::remove_dir_all(&dir).ok();
     }
 
