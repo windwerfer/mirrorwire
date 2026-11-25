@@ -1,0 +1,58 @@
+# DRAFT metadata for https://gitlab.com/fdroid/fdroiddata (file: metadata/io.github.windwerfer.mirrorwire.yml).
+# Follows https://f-droid.org/docs/Build_Metadata_Reference/. Not submitted. See README.md here.
+# Run `fdroid rewritemeta io.github.windwerfer.mirrorwire` and `fdroid lint` before the merge request.
+
+Categories:
+  - Multimedia
+  - Connectivity
+# F-Droid takes ONE SPDX identifier. The source is "MIT OR Apache-2.0"; MIT is the shorter of the two.
+License: MIT
+AuthorName: windwerfer
+WebSite: https://github.com/windwerfer/mirrorwire
+SourceCode: https://github.com/windwerfer/mirrorwire
+IssueTracker: https://github.com/windwerfer/mirrorwire/issues
+Changelog: https://github.com/windwerfer/mirrorwire/blob/HEAD/CHANGELOG.md
+
+AutoName: MirrorWire
+
+RepoType: git
+Repo: https://github.com/windwerfer/mirrorwire.git
+
+# Anti-features: none known. No ads, no tracking, no non-free network service (it talks to the
+# presenter the user pairs with, on the LAN), no non-free dependency (everything is built from
+# the pinned Cargo.lock; the craft-libs git dependency is Apache-2.0, pinned by commit).
+
+Builds:
+  - versionName: 0.2.2
+    versionCode: 2002
+    commit: v0.2.2
+    # The recipe pins the same inputs as packaging/fdroid/README.md "Reproducible build".
+    sudo:
+      - apt-get update
+      - apt-get install -y --no-install-recommends build-essential curl ca-certificates python3 openjdk-17-jdk-headless
+    ndk: 27.2.12479018
+    prebuild:
+      - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+    build:
+      # rust-toolchain.toml pins the compiler; rustup installs it on first use.
+      - export PATH="$HOME/.cargo/bin:$PATH"
+      - rustup target add aarch64-linux-android
+      - cargo install cargo-ndk --locked --version 4.1.2
+      - MIRRORWIRE_UNSIGNED=1 packaging/android/build-apk.sh dist
+    output: dist/MirrorWire-arm64-v8a-unsigned.apk
+
+# Verify F-Droid's build against the APK the project publishes, then ship the project's own
+# signature (Reproducible Builds flow, apksigcopier). Needs the release key's certificate hash.
+Binaries: https://github.com/windwerfer/mirrorwire/releases/download/v%v/MirrorWire-arm64-v8a.apk
+# TODO(Thomas): fill in the SHA-256 of the RELEASE signing certificate (not the debug key):
+#   apksigner verify --print-certs MirrorWire-arm64-v8a.apk | grep 'SHA-256'
+# then uncomment (lowercase hex, no colons):
+# AllowedAPKSigningKeys: <64 hex characters>
+
+# Tags: the tag v<version> is the release. The versionCode is read from Cargo.toml
+# ([workspace.metadata.android] version_code) and the versionName from the version line.
+UpdateCheckMode: Tags ^v[0-9.]+$
+UpdateCheckData: Cargo.toml|version_code\s*=\s*(\d+)|.|\nversion\s*=\s*"(\d+\.\d+\.\d+)"
+AutoUpdateMode: Version
+CurrentVersion: 0.2.2
+CurrentVersionCode: 2002
