@@ -2,7 +2,26 @@
 
 ## Unreleased
 
-## 0.2.0
+## 0.2.1
+
+First published release of the 0.2 series. v0.2.0 was tagged but never released: its Audit job
+failed on RUSTSEC-2026-0592 (`url` 2.5.8), so the GitHub Release job never ran. The v0.2.0 tag
+stays as it is; everything listed under 0.2.0 below ships in this release.
+
+### Breaking
+- Protocol version 11 (unchanged from the 0.2.0 tag): the presenter and all viewers must be
+  updated together, including the new Android APK.
+
+### Security
+- Upgrade `url` 2.5.8 to 2.5.9 (and `form_urlencoded` 1.2.3) to fix RUSTSEC-2026-0592 (stack
+  overflow in `Url::origin()` on nested `blob:` URLs).
+
+### Untested on hardware
+- Opt-in pen pressure (uinput) and the Miracast sink under Flatpak have not been tested on
+  real hardware yet.
+
+## 0.2.0 (tagged, never released)
+
 
 ### Breaking
 - Protocol version 11: the `pointer` control message carries a required `pressure`
