@@ -155,11 +155,15 @@ if [ ! -f "$KEYSTORE" ]; then
     -dname "CN=MirrorWire Debug,O=MirrorWire,C=DE" >/dev/null
 fi
 APK="$OUT/$APK_NAME"
+# v2+v3 only (v1 is not needed at minSdk 26): the signature then covers the exact bytes of the
+# unsigned APK, which is what apksigcopier / F-Droid copy and compare. --alignment-preserved
+# stops apksigner 35 from re-aligning entries (that changes bytes outside the signing block).
 # Passwords go through env: so they never show up in the process list or logs.
 export MIRRORWIRE_KS_PASS="${MIRRORWIRE_KS_PASS:-android}"
 export MIRRORWIRE_KEY_PASS="${MIRRORWIRE_KEY_PASS:-$MIRRORWIRE_KS_PASS}"
 "$BT/apksigner" sign --ks "$KEYSTORE" --ks-pass env:MIRRORWIRE_KS_PASS \
   --key-pass env:MIRRORWIRE_KEY_PASS --ks-key-alias "${MIRRORWIRE_KEY_ALIAS:-androiddebugkey}" \
+  --alignment-preserved true \
   --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true \
   --out "$APK" "$WORK/aligned.apk"
 "$BT/apksigner" verify --verbose "$APK" | head -n 4
