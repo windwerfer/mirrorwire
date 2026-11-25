@@ -1,5 +1,14 @@
 # HANDOFF
 
+## Release 0.2.2 prep (2026-11-25, branch `release-0.2.2`, local only: not pushed, not tagged)
+- Version 0.2.2, versionCode 2002 (`major*1e6+minor*1e3+patch`; Cargo.toml `[workspace.metadata.android] version_code` must match, the script checks). Dev app = code + 2000000000 (own package id).
+- Reproducible unsigned APK: two clones at different paths, separate target dirs: both `20edb3c9d4f994543eed2080cd585e59de0d21d0b5e251ccaa8a838f41669d77` (commit 31535ed). At 5838ac5 (current build flags) the unsigned APK is `b40860e3c6590192ea6fd98b1b29365b11c0e65437bdc2e58747dc0e91ff553b`; a debug-signed build of the other clone passed `apksigcopier compare`. SOURCE_DATE_EPOCH is the commit time, so hashes change with every commit; compare only at one commit. Bugs found on the way: target-dir paths leaked via glutin build script (fixed by remap), apksigner 35 needs `--alignment-preserved true`.
+- Sonar S8707: `scripts/run-stats.py` and `scripts/sim-compare.py` resolve with `os.path.realpath` and require the path inside cwd / repo / temp / `MIRRORWIRE_SCRIPT_BASE`. Not checked against SonarCloud (could not read the rule text offline). If the 3 issues stay open after the next scan: mark them Safe (input is the developer's own local log files).
+- Needs Thomas: real screenshots in `fastlane/.../phoneScreenshots/`; release cert SHA-256 for `AllowedAPKSigningKeys` (TODO in the yml); submit fdroiddata MR and the IzzyOnDroid request (packaging/fdroid/README.md); IzzyOnDroid policy could not be fetched, re-read it.
+- Proposed, needs owner OK (not in decisions.md): versionCode scheme and reproducible-build policy as a decision entry (D27?). `rust-toolchain.toml` pins 1.100.0 for all CI jobs (bump deliberately).
+- Not run: the CI Android job itself (new reproducibility step), a device install of the v2+v3-only APK, `fdroid build` on a real F-Droid buildserver.
+- README still says the APK is debug-signed (stale for releases, untouched).
+
 ## Release status (2026-11-25)
 - v0.2.0 (tag 3161a39 -> 5d27d7c) was tagged but never released: Audit failed on RUSTSEC-2026-0592 (url 2.5.8), so no GitHub Release exists for it. The tag is untouched.
 - v0.2.1 (commit 88192b2a3c43cf4e5bd2f47be85ecff0f6376894, annotated tag v0.2.1) is the first published 0.2 release: https://github.com/windwerfer/mirrorwire/releases/tag/v0.2.1
