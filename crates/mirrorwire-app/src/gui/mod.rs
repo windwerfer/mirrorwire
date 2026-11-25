@@ -39,6 +39,36 @@ the encoder's rate in these modes (it still adjusts FEC and pacing), so a slow l
 overflow. Use Auto, CBR or VBR to follow the link.";
 
 const PRESENT_AVAILABLE: bool = cfg!(all(target_os = "linux", feature = "portal"));
+/// This build has FFmpeg (VAAPI / x264 / VideoToolbox encoders).
+const HAS_FFMPEG: bool = cfg!(feature = "ffmpeg");
+/// This build has the pure-Rust FilmCraft encoder.
+const HAS_FILMCRAFT: bool = cfg!(feature = "filmcraft");
+
+/// Encoder the GUI presenter starts with: FilmCraft when the build has no FFmpeg (the only
+/// encoder then) or when the user chose it under Advanced, otherwise `auto`.
+fn start_encoder(has_ffmpeg: bool, has_filmcraft: bool, use_filmcraft: bool) -> EncoderBackend {
+    if !has_ffmpeg || (has_filmcraft && use_filmcraft) {
+        EncoderBackend::Filmcraft
+    } else {
+        EncoderBackend::Auto
+    }
+}
+
+/// The line under the "Use the FilmCraft encoder" checkbox.
+fn filmcraft_note(has_ffmpeg: bool, has_filmcraft: bool) -> &'static str {
+    match (has_ffmpeg, has_filmcraft) {
+        (true, true) => {
+            "Off: VAAPI, then x264 (FFmpeg). On: FilmCraft, slower but needs no FFmpeg or GPU \
+             driver; it does not scale. Still switchable in the presenter's Quality panel."
+        }
+        (false, true) => "This build has no FFmpeg, so FilmCraft is the only encoder.",
+        (true, false) => "Not in this build (cargo feature `filmcraft`).",
+        (false, false) => {
+            "This build has neither FFmpeg nor FilmCraft: it cannot encode. Rebuild with \
+             `--features filmcraft`."
+        }
+    }
+}
 
 /// Background result of the "Open port for me…" button.
 enum FirewallFix {
@@ -144,6 +174,8 @@ pub fn run(
                     crate::capture_prefs::resolve(None, None, None, None, None, &config_dir);
                 #[cfg(target_os = "linux")]
                 let pen = pen::PenUi::load(&config_dir);
+                let use_filmcraft =
+                    !HAS_FFMPEG || mirrorwire_net::settings::filmcraft_encoder_saved(&config_dir);
                 let mut app = MirrorApp {
                     identity,
                     runtime: handle,
@@ -190,6 +222,7 @@ pub fn run(
                     qp: DEFAULT_QP,
                     keyint_sec: 10,
                     encoder: EncoderBackend::Auto,
+                    use_filmcraft,
                     firewall_fix: None,
                     capture,
                     cursor_tex: None,
@@ -283,6 +316,9 @@ struct MirrorApp {
     qp: u32,
     keyint_sec: u32,
     encoder: EncoderBackend,
+    /// Start screen › Advanced: present with the FilmCraft encoder (saved). Always on in a
+    /// build without FFmpeg, where FilmCraft is the only encoder.
+    use_filmcraft: bool,
     firewall_fix: Option<Arc<Mutex<FirewallFix>>>,
     /// Presenter cursor mode and frame-rate cap (Quality panel).
     capture: CapturePrefs,
@@ -412,12 +448,15 @@ impl MirrorApp {
         self.error = None;
         self.qr_texture = None;
         let repaint = ctx.clone();
+        // The Quality panel's encoder selector starts on what actually runs.
+        self.encoder = start_encoder(HAS_FFMPEG, HAS_FILMCRAFT, self.use_filmcraft);
         self.presenting = Some(presenter::spawn_for_gui(
             self.runtime.clone(),
             self.config_dir.clone(),
             (*self.identity).clone(),
             self.name.clone(),
             self.present_port,
+            self.encoder,
             Some(Arc::new(move || repaint.request_repaint())),
         ));
         self.screen = Screen::Present;
@@ -509,10 +548,35 @@ impl MirrorApp {
                         "The viewer finds this port automatically (mDNS, QR and the link all \
                          include it).",
                     );
+                    self.filmcraft_setting(ui);
                 });
         });
         ui.add_space(24.0);
         self.footer(ui);
+    }
+
+    /// Start screen › Advanced: "Use the FilmCraft encoder", saved in `settings.json`. Here
+    /// and not in the presenter window, because a presenter whose default encoder fails never
+    /// reaches that window's Quality panel.
+    fn filmcraft_setting(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        let response = ui.add_enabled(
+            HAS_FILMCRAFT && HAS_FFMPEG,
+            egui::Checkbox::new(
+                &mut self.use_filmcraft,
+                "Use the FilmCraft encoder (pure Rust, CPU)",
+            ),
+        );
+        if response.changed() {
+            if let Err(e) = mirrorwire_net::settings::save_filmcraft_encoder(
+                &self.config_dir,
+                self.use_filmcraft,
+            ) {
+                tracing::warn!("could not save the encoder choice: {e:#}");
+                self.error = Some(format!("Could not save the encoder choice: {e:#}"));
+            }
+        }
+        ui.weak(filmcraft_note(HAS_FFMPEG, HAS_FILMCRAFT));
     }
 
     fn browse_ui(&mut self, ui: &mut egui::Ui) {
@@ -746,5 +810,24 @@ impl Drop for MirrorApp {
         if let Some(h) = self.presenting.take() {
             h.stop();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn start_encoder_follows_the_build_and_the_setting() {
+        assert_eq!(start_encoder(true, true, false), EncoderBackend::Auto);
+        assert_eq!(start_encoder(true, true, true), EncoderBackend::Filmcraft);
+        // A saved "on" from another build is ignored when FilmCraft is not compiled in.
+        assert_eq!(start_encoder(true, false, true), EncoderBackend::Auto);
+        // Without FFmpeg FilmCraft is the only encoder, whatever was saved.
+        assert_eq!(start_encoder(false, true, false), EncoderBackend::Filmcraft);
+        assert_eq!(
+            start_encoder(false, false, false),
+            EncoderBackend::Filmcraft
+        );
     }
 }

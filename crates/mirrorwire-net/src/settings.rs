@@ -34,6 +34,10 @@ pub struct Settings {
     /// Off when missing or unreadable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pen_pressure: Option<String>,
+    /// GUI presenter: start with the pure-Rust FilmCraft encoder (`on`) instead of `auto`.
+    /// Off when missing or unreadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filmcraft_encoder: Option<String>,
 }
 
 impl Settings {
@@ -107,6 +111,23 @@ pub fn save_pen_pressure(config_dir: &Path, on: bool) -> Result<()> {
         return Ok(());
     }
     settings.pen_pressure = Some(value.to_owned());
+    settings.save(config_dir)
+}
+
+/// The saved "Use the FilmCraft encoder" choice. Off unless `settings.json` says `on`
+/// (missing, junk or an unreadable file all mean off).
+pub fn filmcraft_encoder_saved(config_dir: &Path) -> bool {
+    Settings::load(config_dir).filmcraft_encoder.as_deref() == Some("on")
+}
+
+/// Persist the "Use the FilmCraft encoder" choice, keeping every other setting.
+pub fn save_filmcraft_encoder(config_dir: &Path, on: bool) -> Result<()> {
+    let mut settings = Settings::load(config_dir);
+    let value = if on { "on" } else { "off" };
+    if settings.filmcraft_encoder.as_deref() == Some(value) {
+        return Ok(());
+    }
+    settings.filmcraft_encoder = Some(value.to_owned());
     settings.save(config_dir)
 }
 
@@ -214,6 +235,7 @@ mod tests {
             fec: Some("20%".into()),
             adaptive_bitrate: Some("on".into()),
             pen_pressure: Some("on".into()),
+            filmcraft_encoder: Some("on".into()),
         };
         settings.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), settings);
@@ -263,6 +285,28 @@ mod tests {
         assert!(!pen_pressure_saved(&dir));
         std::fs::write(Settings::path(&dir), b"{not json").unwrap();
         assert!(!pen_pressure_saved(&dir));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn filmcraft_encoder_is_off_by_default_and_persists() {
+        let dir = temp_dir();
+        assert!(!filmcraft_encoder_saved(&dir));
+        save_port(&dir, 47555).unwrap();
+        save_filmcraft_encoder(&dir, true).unwrap();
+        assert!(filmcraft_encoder_saved(&dir));
+        // Other settings survive, and saving capture settings keeps the encoder choice.
+        save_capture(&dir, "mirror", "separate", "60", "auto", true).unwrap();
+        let s = Settings::load(&dir);
+        assert_eq!(s.port, Some(47555));
+        assert_eq!(s.filmcraft_encoder.as_deref(), Some("on"));
+        save_filmcraft_encoder(&dir, false).unwrap();
+        assert!(!filmcraft_encoder_saved(&dir));
+        // Junk or a broken file means off, never a crash.
+        std::fs::write(Settings::path(&dir), r#"{"filmcraft_encoder": 7}"#).unwrap();
+        assert!(!filmcraft_encoder_saved(&dir));
+        std::fs::write(Settings::path(&dir), b"{not json").unwrap();
+        assert!(!filmcraft_encoder_saved(&dir));
         std::fs::remove_dir_all(&dir).ok();
     }
 

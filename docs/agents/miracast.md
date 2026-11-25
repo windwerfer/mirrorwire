@@ -578,7 +578,7 @@ tablet screenshots `t27`-`t30` (casting). Group formation needed the automatic r
 ## 14. Start screen flow (D21, 2026-11-21)
 
 Start screen: large "Presenter", small "Viewer", "View your Android device
-(Miracast-compatible)" (label per D22; feature `miracast`, default and effective on Linux only), "Advanced" (UDP port) collapsed. The Miracast button opens
+(Miracast-compatible)" (label per D22; feature `miracast`, default and effective on Linux only), "Advanced" (UDP port, FilmCraft encoder) collapsed. The Miracast button opens
 `Screen::Miracast` (`gui/miracast.rs`), driven by the pure state machine
 `mirrorwire-app/src/miracast_flow.rs`:
 

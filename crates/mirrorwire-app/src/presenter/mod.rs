@@ -860,11 +860,13 @@ pub fn spawn_for_gui(
     identity: Identity,
     name: String,
     port: u16,
+    encoder: mirrorwire_media::encode::EncoderBackend,
     on_update: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> PresenterHandle {
     let mut args = PresentArgs::gui_defaults();
     args.name = Some(name);
     args.port = port;
+    args.encoder = encoder;
     args.capture = crate::capture_prefs::resolve(None, None, None, None, None, &config_dir);
     spawn(runtime, args, config_dir, identity, on_update)
 }

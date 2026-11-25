@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- Start screen › Advanced: **Use the FilmCraft encoder**, remembered in `settings.json`
+  (`filmcraft_encoder`). The GUI presenter then starts with FilmCraft instead of `auto`, so a
+  machine whose VAAPI/x264 fails at once can still present. Always on in builds without
+  FFmpeg.
+
 ## 0.2.1
 
 First published release of the 0.2 series. v0.2.0 was tagged but never released: its Audit job

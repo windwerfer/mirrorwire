@@ -116,7 +116,10 @@ CBR/VBR/CQP/ICQ, keyint) and a collapsed **Details** section (encoder, capture p
 FEC, frame rate, connection attempts); the window scrolls on small screens. The default port is
 UDP 47800; it can be changed in the start screen (saved for next time), with
 `--port`, or with `MIRRORWIRE_PORT`. The mDNS announcement and the QR/link already
-include the port, so the viewer finds it automatically. Firewall handling is described
+include the port, so the viewer finds it automatically. The start screen's **Advanced**
+section also has **Use the FilmCraft encoder** (saved in `settings.json`): the presenter
+then starts with FilmCraft instead of VAAPI/x264. It is always on, and greyed out, in a
+build without FFmpeg. Firewall handling is described
 under [Firewall](#firewall) below. **View** lists
 presenters and, while connecting, a staged status (handshake, certificate, pairing,
 first frame) plus a copyable log. After a timeout it shows the same short firewall
@@ -203,7 +206,8 @@ the encoder's rate in those modes), `--qp 18`, `--keyint` (frames; 0 = 10 s),
 `--no-dmabuf` (capture through shared memory instead of zero-copy GPU buffers).
 `filmcraft` is an optional pure-Rust H.264 encoder for comparison (built into the Flatpak
 and AppImage; from source add `--features filmcraft`). It does not scale: omit `--size`. A build without FFmpeg (`--no-default-features --features gui,filmcraft`) has only this encoder and FilmCraft's decoder. It can also be switched live in the
-presenter window under Quality › Encoder. FFmpeg (VAAPI, then x264) stays the default.
+presenter window under Quality › Encoder, or chosen for every start under Advanced on the
+start screen (useful when the default encoder fails before the presenter window opens). FFmpeg (VAAPI, then x264) stays the default.
 The default size is the native capture. `--size 1920x1080` (or `--width` / `--height`)
 overrides it and scales.
 
