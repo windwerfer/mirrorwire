@@ -315,4 +315,72 @@ mod tests {
             .unwrap_err()
             .contains("not found"));
     }
+
+    #[test]
+    fn the_real_workspace_obeys_the_crate_layers() {
+        assert_eq!(layers(&root()), Ok(()));
+        assert!(root().join("Cargo.toml").is_file());
+    }
+
+    /// A throwaway workspace tree under the system temp dir with the given manifests.
+    fn fake_tree(name: &str, manifests: &[(&str, &str)]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("xtask-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for (krate, text) in manifests {
+            let d = dir.join("crates").join(krate);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("Cargo.toml"), text).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn layers_rejects_a_forbidden_dependency_and_an_unlisted_crate() {
+        let manifests: Vec<(&str, String)> = LAYERS
+            .iter()
+            .map(|(k, _)| (*k, "[package]\nname = \"x\"\n".to_string()))
+            .collect();
+        let mut refs: Vec<(&str, &str)> = manifests.iter().map(|(k, t)| (*k, t.as_str())).collect();
+        // The proto crate may depend on nothing from the workspace.
+        let bad = "[dependencies]\nmirrorwire-net.workspace = true\n";
+        refs.retain(|(k, _)| *k != "mirrorwire-proto");
+        refs.push(("mirrorwire-proto", bad));
+        refs.push(("surprise", "[package]\n"));
+        let dir = fake_tree("layers", &refs);
+        let err = layers(&dir).unwrap_err();
+        assert!(
+            err.contains("mirrorwire-proto must not depend on mirrorwire-net"),
+            "{err}"
+        );
+        assert!(err.contains("crates/surprise is not listed"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+        // A missing manifest is reported with its path, not a panic.
+        let empty = fake_tree("empty", &[("mirrorwire-proto", "")]);
+        assert!(layers(&empty).unwrap_err().contains("Cargo.toml"));
+        let _ = fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn run_reports_success_failure_and_a_missing_program() {
+        assert_eq!(run("ok", "true", &[]), Ok(()));
+        assert!(run("bad", "false", &[])
+            .unwrap_err()
+            .starts_with("bad failed"));
+        let err = run("none", "definitely-not-a-program-xtask", &[]).unwrap_err();
+        assert!(err.contains("cannot start"), "{err}");
+    }
+
+    #[test]
+    fn report_numbers_are_read_by_label() {
+        assert_eq!(number_after(REPORT, "decode errors "), Some(0.0));
+        assert_eq!(number_after(REPORT, "frame marker checks "), Some(359.0));
+        assert_eq!(number_after(REPORT, "no such label "), None);
+        assert_eq!(
+            measured(REPORT, "capture_to_decoded_p95_ms_max"),
+            Some(15.12)
+        );
+        assert_eq!(measured(REPORT, "unrecoverable_frames_max"), Some(0.0));
+        assert_eq!(measured(REPORT, "bogus"), None);
+        assert!(check_loopback(REPORT, &[]).is_err());
+    }
 }
