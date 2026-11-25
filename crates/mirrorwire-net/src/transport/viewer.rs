@@ -201,6 +201,16 @@ impl ViewerSession {
         });
     }
 
+    /// The Pen button changed (`pen_mode`, protocol 12).
+    pub fn send_pen_mode(&self, on: bool) {
+        let _ = self.control.send(Control::PenMode { on });
+    }
+
+    /// The viewer shows no video (`video_paused`, protocol 12): the presenter stops encoding.
+    pub fn send_video_paused(&self, paused: bool) {
+        let _ = self.control.send(Control::VideoPaused { paused });
+    }
+
     pub fn control_sender(&self) -> mpsc::UnboundedSender<Control> {
         self.control.clone()
     }

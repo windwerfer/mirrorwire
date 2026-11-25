@@ -61,6 +61,10 @@ struct ViewerApp {
     /// Pen/finger drives the presenter's pointer (off by default: a tap then toggles the
     /// overlay instead of clicking on the presenter).
     pen_mode: bool,
+    /// ☰ menu: show the video, or only a pen surface / the remote buttons (no video).
+    view_mode: ViewMode,
+    /// `video_paused` last sent on this connection (`None` = not yet: send on connect).
+    video_paused_sent: Option<bool>,
     pen_down: bool,
     /// Last pen/touch force seen while pen mode is on (`None`: the device reports none).
     pen_pressure: Option<u16>,
@@ -131,6 +135,8 @@ impl ViewerApp {
             picture_size: (0, 0),
             show_overlay: true,
             pen_mode: false,
+            view_mode: ViewMode::Video,
+            video_paused_sent: None,
             pen_down: false,
             pen_pressure: None,
             pen_last_move: None,
@@ -153,6 +159,7 @@ impl ViewerApp {
         self.error = None;
         self.clear_picture();
         self.cursor_tex = None;
+        self.video_paused_sent = None;
         self.target_name = target
             .name
             .clone()
@@ -356,10 +363,23 @@ impl ViewerApp {
     }
 
     fn video_ui(&mut self, ui: &mut egui::Ui, status: &session::Status) {
+        // Tell the presenter whether we show video (again after every reconnect).
+        let want_pause = self.view_mode != ViewMode::Video;
+        if let Some(tx) = &status.control {
+            if self.video_paused_sent != Some(want_pause) {
+                let _ =
+                    tx.send(mirrorwire_proto::control::Control::VideoPaused { paused: want_pause });
+                self.video_paused_sent = Some(want_pause);
+            }
+        }
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
         let mut picture_rect: Option<egui::Rect> = None;
-        if self.texture.is_some() || self.gpu_picture {
+        if self.view_mode == ViewMode::Pen {
+            picture_rect = pen_surface(ui, rect, status);
+        } else if self.view_mode == ViewMode::Remote {
+            // Buttons come after the full-area interaction below, so they get the taps.
+        } else if self.texture.is_some() || self.gpu_picture {
             let (w, h) = (
                 self.picture_size.0.max(1) as f32,
                 self.picture_size.1.max(1) as f32,
@@ -418,6 +438,11 @@ impl ViewerApp {
             self.show_overlay = !self.show_overlay;
         }
         self.send_pen(ui.ctx(), &response, picture_rect, status);
+        if self.view_mode == ViewMode::Remote {
+            remote_only_buttons(ui, rect, status);
+        }
+        // Always reachable, also in pen mode where a tap is a stroke and cannot open the overlay.
+        self.view_menu(ui, rect, status);
         if self.show_overlay {
             let stream = status.stream.as_ref();
             let text = format!(
@@ -490,6 +515,12 @@ impl ViewerApp {
                 .clicked()
             {
                 self.pen_mode = !self.pen_mode;
+                // Tell the presenter at once (protocol 12): it asks its desktop for pointer
+                // permission now, not on the first stroke.
+                if let Some(tx) = &status.control {
+                    let _ =
+                        tx.send(mirrorwire_proto::control::Control::PenMode { on: self.pen_mode });
+                }
             }
             // Presenter remote: one tap = one key on the presenter (protocol 9).
             let keys = mirrorwire_proto::control::RemoteKey::ALL;
@@ -513,6 +544,64 @@ impl ViewerApp {
 }
 
 impl ViewerApp {
+    /// The ☰ menu at the top right: the two no-video modes (and Disconnect, which the overlay
+    /// cannot offer in pen mode).
+    fn view_menu(&mut self, ui: &mut egui::Ui, rect: egui::Rect, status: &session::Status) {
+        let at = egui::Rect::from_min_size(
+            rect.right_top() + egui::vec2(-60.0, 2.0),
+            egui::vec2(52.0, 36.0),
+        );
+        let mut chosen = None;
+        let mut leave = false;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(at), |ui| {
+            ui.menu_button(egui::RichText::new("☰").size(26.0), |ui| {
+                let mut pen = self.view_mode == ViewMode::Pen;
+                if ui.checkbox(&mut pen, "Wacom pen (no video)").changed() {
+                    chosen = Some(if pen { ViewMode::Pen } else { ViewMode::Video });
+                }
+                let mut remote = self.view_mode == ViewMode::Remote;
+                if ui
+                    .checkbox(&mut remote, "PowerPoint remote only (no video)")
+                    .changed()
+                {
+                    chosen = Some(if remote {
+                        ViewMode::Remote
+                    } else {
+                        ViewMode::Video
+                    });
+                }
+                ui.label("Without video the presenter encodes and sends nothing.");
+                ui.separator();
+                if ui.button("Disconnect").clicked() {
+                    leave = true;
+                }
+            });
+        });
+        if let Some(mode) = chosen {
+            self.set_view_mode(mode, status);
+        }
+        if leave {
+            self.disconnect();
+        }
+    }
+
+    /// Switch the video area's mode. The pen is on exactly in "Wacom pen" mode (switching into
+    /// it asks the presenter's desktop for pointer permission, protocol 12).
+    fn set_view_mode(&mut self, mode: ViewMode, status: &session::Status) {
+        if mode == self.view_mode {
+            return;
+        }
+        let pen = mode == ViewMode::Pen;
+        let pen_changed = pen != self.pen_mode && (pen || self.view_mode == ViewMode::Pen);
+        self.view_mode = mode;
+        if pen_changed {
+            self.pen_mode = pen;
+            if let Some(tx) = &status.control {
+                let _ = tx.send(mirrorwire_proto::control::Control::PenMode { on: pen });
+            }
+        }
+    }
+
     /// Finger/pen as the presenter's pointer (pen mode only): down/up on the reliable control
     /// stream, moves coalesced to about 60 per second.
     fn send_pen(
@@ -753,4 +842,98 @@ fn stale_picture_warning(status: &session::Status) -> Option<String> {
             status.reader_behind_ms / 1000.0
         )
     })
+}
+
+/// What the video area shows (☰ menu). The no-video modes ask the presenter to stop encoding
+/// (`video_paused`, protocol 12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewMode {
+    Video,
+    /// "Wacom pen (no video)": an empty surface in the presenter's aspect ratio; pen on.
+    Pen,
+    /// "PowerPoint remote only (no video)": large remote buttons.
+    Remote,
+}
+
+/// "Wacom pen (no video)": an empty surface in the presenter's aspect ratio that stands for its
+/// whole screen. Returns it as the rectangle pen positions are mapped through.
+fn pen_surface(ui: &egui::Ui, area: egui::Rect, status: &session::Status) -> Option<egui::Rect> {
+    let stream = status.stream.as_ref()?;
+    // Leave room for the ☰ button above and the hint below.
+    let inner = area.shrink2(egui::vec2(16.0, 56.0));
+    let (l, t, w, h) = mirrorwire_proto::control::fit_rect(
+        (inner.left(), inner.top(), inner.width(), inner.height()),
+        stream.width,
+        stream.height,
+    )?;
+    let surface = egui::Rect::from_min_size(egui::pos2(l, t), egui::vec2(w, h));
+    let painter = ui.painter();
+    painter.rect_filled(surface, 6.0, egui::Color32::from_gray(28));
+    painter.rect_stroke(
+        surface,
+        6.0,
+        egui::Stroke::new(2.0, egui::Color32::from_gray(90)),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        surface.center_bottom() + egui::vec2(0.0, 22.0),
+        egui::Align2::CENTER_CENTER,
+        format!(
+            "✏ Wacom pen: this area is the presenter's screen ({}x{}). No video is sent.",
+            stream.width, stream.height
+        ),
+        egui::FontId::proportional(15.0),
+        egui::Color32::from_gray(160),
+    );
+    Some(surface)
+}
+
+/// "PowerPoint remote only (no video)": the four remote keys as large buttons.
+fn remote_only_buttons(ui: &mut egui::Ui, area: egui::Rect, status: &session::Status) {
+    use mirrorwire_proto::control::{Control, RemoteKey};
+    let send = |key: RemoteKey| {
+        if let Some(tx) = &status.control {
+            let _ = tx.send(Control::RemoteKey { key });
+        }
+    };
+    let c = area.center();
+    let (big, small, gap) = (egui::vec2(280.0, 200.0), egui::vec2(280.0, 80.0), 16.0);
+    let rows = [
+        (
+            RemoteKey::Previous,
+            egui::pos2(c.x - big.x - gap / 2.0, c.y - big.y),
+            big,
+            36.0,
+        ),
+        (
+            RemoteKey::Next,
+            egui::pos2(c.x + gap / 2.0, c.y - big.y),
+            big,
+            36.0,
+        ),
+        (
+            RemoteKey::Space,
+            egui::pos2(c.x - small.x - gap / 2.0, c.y + gap),
+            small,
+            24.0,
+        ),
+        (
+            RemoteKey::Escape,
+            egui::pos2(c.x + gap / 2.0, c.y + gap),
+            small,
+            24.0,
+        ),
+    ];
+    for (key, min, size, text) in rows {
+        let r = egui::Rect::from_min_size(min, size);
+        if ui
+            .put(
+                r,
+                egui::Button::new(egui::RichText::new(key.label()).size(text)),
+            )
+            .clicked()
+        {
+            send(key);
+        }
+    }
 }

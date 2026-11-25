@@ -107,6 +107,9 @@ pub struct Presenter {
     pub viewer_connected: watch::Receiver<bool>,
     /// Screen of the viewer that connected last (from its `hello`), for sizing an Extend monitor.
     pub viewer_display: watch::Receiver<Option<DisplayInfo>>,
+    /// The connected viewer shows no video right now (`video_paused`, protocol 12): skip
+    /// encoding. `false` when no viewer is connected.
+    pub video_paused: watch::Receiver<bool>,
     stream_info: Arc<watch::Sender<StreamInfo>>,
     pub(super) fec: Arc<LinkControl>,
     endpoint: Endpoint,
@@ -130,6 +133,7 @@ impl Presenter {
         let (connected_tx, viewer_connected) = watch::channel(false);
         let current_tx = Arc::new(current_tx);
         let (display_tx, viewer_display) = watch::channel(None);
+        let (paused_tx, video_paused) = watch::channel(false);
         let mut info = cfg.stream_info;
         info.fec = cfg.fec.snapshot().mode.as_string();
         let stream_info = Arc::new(watch::channel(info).0);
@@ -153,6 +157,7 @@ impl Presenter {
             current: current_tx,
             connected: connected_tx,
             display: display_tx,
+            video_paused: paused_tx,
             on_keyframe_request,
             attempts: cfg.attempts,
             fec: cfg.fec.clone(),
@@ -176,6 +181,7 @@ impl Presenter {
             local_addr,
             viewer_connected,
             viewer_display,
+            video_paused,
             stream_info,
             fec: cfg.fec,
             endpoint,
@@ -210,6 +216,7 @@ struct SessionShared {
     current: Arc<watch::Sender<Option<ActiveViewer>>>,
     connected: watch::Sender<bool>,
     display: watch::Sender<Option<DisplayInfo>>,
+    video_paused: watch::Sender<bool>,
     on_keyframe_request: Callback,
     attempts: Arc<Mutex<Vec<IncomingAttempt>>>,
     fec: Arc<LinkControl>,
@@ -340,6 +347,8 @@ async fn handle_viewer(incoming: quinn::Incoming, shared: Arc<SessionShared>) ->
     if let Some(old) = shared.current.send_replace(Some(active)) {
         old.conn.close(1u32.into(), b"replaced by another viewer");
     }
+    // A new viewer starts with video; it pauses it itself if it wants none.
+    shared.video_paused.send_replace(false);
     shared.connected.send_replace(true);
     shared
         .resend
@@ -384,6 +393,8 @@ async fn handle_viewer(incoming: quinn::Incoming, shared: Arc<SessionShared>) ->
     let mut keyframe_gate = KeyframeGate::default();
     let mut remote_gate = TapGate::default();
     let mut pointer_gate = PointerGate::default();
+    // Own budget, so Pen on/off never eats the remote keys' taps.
+    let mut pen_mode_gate = TapGate::default();
     let result = async {
         loop {
             let msg = match read_msg(&mut recv).await {
@@ -456,6 +467,26 @@ async fn handle_viewer(incoming: quinn::Incoming, shared: Arc<SessionShared>) ->
                         }
                     }
                 }
+                Control::PenMode { on } => {
+                    if let Some(tx) = &shared.remote_keys {
+                        if pen_mode_gate.allow(Instant::now()) {
+                            let _ = tx.try_send(RemoteInput::PenMode(on));
+                        }
+                    }
+                }
+                Control::VideoPaused { paused } => {
+                    // A state, not an event: no rate limit needed, only changes count.
+                    let was = shared.video_paused.send_replace(paused);
+                    if was != paused {
+                        tracing::info!(
+                            "viewer {name} {}",
+                            if paused { "shows no video (pen or remote only): video paused" } else { "shows video again" }
+                        );
+                        if !paused && keyframe_gate.allow(now_us(), conn.rtt()) {
+                            (shared.on_keyframe_request)();
+                        }
+                    }
+                }
                 Control::Bye => return Ok::<_, anyhow::Error>(()),
                 other => tracing::debug!("ignoring {other:?}"),
             }
@@ -478,6 +509,7 @@ async fn handle_viewer(incoming: quinn::Incoming, shared: Arc<SessionShared>) ->
     });
     if shared.current.borrow().is_none() {
         shared.connected.send_replace(false);
+        shared.video_paused.send_replace(false);
     }
     shared.fec.viewer_left(&peer);
     tracing::info!("viewer {name} disconnected");

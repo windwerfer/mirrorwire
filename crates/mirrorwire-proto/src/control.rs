@@ -113,6 +113,19 @@ pub enum Control {
         #[serde(deserialize_with = "Option::deserialize")]
         pressure: Option<u16>,
     },
+    /// Viewer -> presenter: the user switched the viewer's Pen button on or off (protocol 12),
+    /// sent at once and again after a reconnect. On `true` the presenter asks the desktop for
+    /// pointer permission (reopening the capture together with input) before the first
+    /// stroke, so the permission dialog appears only when the pen is really wanted.
+    PenMode {
+        on: bool,
+    },
+    /// Viewer -> presenter: the viewer shows no video right now (protocol 12; its "Wacom pen"
+    /// or "PowerPoint remote only" mode). While `true` the presenter skips encoding and
+    /// sending; `false` resumes with a keyframe. A new connection starts with video on.
+    VideoPaused {
+        paused: bool,
+    },
     Bye,
 }
 
@@ -165,6 +178,8 @@ pub enum RemoteInput {
         y: u16,
         pressure: Option<u16>,
     },
+    /// The viewer's Pen button changed ([`Control::PenMode`]).
+    PenMode(bool),
 }
 
 /// Phase of a [`Control::Pointer`] event. Down = left button pressed, up = released.
@@ -174,6 +189,27 @@ pub enum PointerPhase {
     Down,
     Move,
     Up,
+}
+
+/// The largest rectangle with the aspect ratio `content_w : content_h` centred in `area`
+/// `(left, top, width, height)`: the pen surface of the viewers' "Wacom pen" mode (the whole
+/// rectangle stands for the presenter's screen). `None` for an empty area or content size, or
+/// any input that is not finite.
+pub fn fit_rect(
+    area: (f32, f32, f32, f32),
+    content_w: u32,
+    content_h: u32,
+) -> Option<(f32, f32, f32, f32)> {
+    let (l, t, w, h) = area;
+    if ![l, t, w, h].iter().all(|v| v.is_finite()) || w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    if content_w == 0 || content_h == 0 {
+        return None;
+    }
+    let scale = (w / content_w as f32).min(h / content_h as f32);
+    let (fw, fh) = (content_w as f32 * scale, content_h as f32 * scale);
+    Some((l + (w - fw) / 2.0, t + (h - fh) / 2.0, fw, fh))
 }
 
 /// Wire position for a point `(px, py)` inside the picture rectangle `(left, top, width, height)`
@@ -402,6 +438,65 @@ mod tests {
         let syms: std::collections::HashSet<i32> =
             RemoteKey::ALL.iter().map(|k| k.keysym()).collect();
         assert_eq!(syms.len(), RemoteKey::ALL.len());
+    }
+
+    #[test]
+    fn pen_mode_wire() {
+        let msg = Control::PenMode { on: true };
+        let wire = msg.encode();
+        assert_eq!(
+            std::str::from_utf8(&wire[4..]).unwrap(),
+            r#"{"type":"pen_mode","on":true}"#
+        );
+        assert_eq!(Control::decode_body(&wire[4..]).unwrap(), msg);
+        assert_eq!(
+            Control::decode_body(br#"{"type":"pen_mode","on":false}"#).unwrap(),
+            Control::PenMode { on: false }
+        );
+        // Missing, null, number or string: errors.
+        for bad in [
+            r#"{"type":"pen_mode"}"#,
+            r#"{"type":"pen_mode","on":null}"#,
+            r#"{"type":"pen_mode","on":1}"#,
+            r#"{"type":"pen_mode","on":"yes"}"#,
+        ] {
+            assert!(Control::decode_body(bad.as_bytes()).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn fit_rect_keeps_the_aspect_and_centres() {
+        // 16:9 content in a 4:3 area: full width, letterboxed top and bottom.
+        assert_eq!(
+            fit_rect((0.0, 0.0, 1600.0, 1200.0), 1920, 1080),
+            Some((0.0, 150.0, 1600.0, 900.0))
+        );
+        // Tall area offset from the origin: full height, pillarboxed.
+        assert_eq!(
+            fit_rect((10.0, 20.0, 1000.0, 300.0), 4, 3),
+            Some((310.0, 20.0, 400.0, 300.0))
+        );
+        assert_eq!(fit_rect((0.0, 0.0, 0.0, 100.0), 16, 9), None);
+        assert_eq!(fit_rect((0.0, 0.0, 100.0, 100.0), 0, 9), None);
+        assert_eq!(fit_rect((f32::NAN, 0.0, 100.0, 100.0), 16, 9), None);
+    }
+
+    #[test]
+    fn video_paused_wire() {
+        let msg = Control::VideoPaused { paused: true };
+        let wire = msg.encode();
+        assert_eq!(
+            std::str::from_utf8(&wire[4..]).unwrap(),
+            r#"{"type":"video_paused","paused":true}"#
+        );
+        assert_eq!(Control::decode_body(&wire[4..]).unwrap(), msg);
+        for bad in [
+            r#"{"type":"video_paused"}"#,
+            r#"{"type":"video_paused","paused":0}"#,
+            r#"{"type":"video_paused","paused":"no"}"#,
+        ] {
+            assert!(Control::decode_body(bad.as_bytes()).is_err(), "{bad}");
+        }
     }
 
     #[test]

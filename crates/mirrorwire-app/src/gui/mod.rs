@@ -197,6 +197,8 @@ pub fn run(
                     show_stats: true,
                     show_remote: false,
                     pen_mode: false,
+                    view_mode: ViewMode::Video,
+                    video_paused_sent: None,
                     pen_down: false,
                     pen_pressure: None,
                     pen_last_move: None,
@@ -223,6 +225,8 @@ pub fn run(
                     keyint_sec: 10,
                     encoder: EncoderBackend::Auto,
                     use_filmcraft,
+                    pen_rights_open: false,
+                    pen_rights_note: None,
                     firewall_fix: None,
                     capture,
                     cursor_tex: None,
@@ -293,6 +297,10 @@ struct MirrorApp {
     /// Pen/touch/mouse over the picture drives the presenter's pointer (off by default, so a
     /// normal tap does not click on the presenter).
     pen_mode: bool,
+    /// ☰ menu: show the video, or only a pen surface / the remote buttons (no video).
+    view_mode: ViewMode,
+    /// `video_paused` last sent on this connection (`None` = not yet: send on connect).
+    video_paused_sent: Option<bool>,
     pen_down: bool,
     /// Last pen/touch force seen while pen mode is on (`None`: no sensor, e.g. a mouse).
     pen_pressure: Option<u16>,
@@ -319,6 +327,12 @@ struct MirrorApp {
     /// Start screen › Advanced: present with the FilmCraft encoder (saved). Always on in a
     /// build without FFmpeg, where FilmCraft is the only encoder.
     use_filmcraft: bool,
+    /// Start screen: the ✏ info box about the remembered pen/keys permission is open.
+    #[cfg_attr(not(all(target_os = "linux", feature = "portal")), allow(dead_code))]
+    pen_rights_open: bool,
+    /// Result of the last "Forget" click, shown in that box.
+    #[cfg_attr(not(all(target_os = "linux", feature = "portal")), allow(dead_code))]
+    pen_rights_note: Option<String>,
     firewall_fix: Option<Arc<Mutex<FirewallFix>>>,
     /// Presenter cursor mode and frame-rate cap (Quality panel).
     capture: CapturePrefs,
@@ -340,9 +354,21 @@ struct MirrorApp {
     pen: pen::PenUi,
 }
 
+/// What the viewer's video area shows (☰ menu). The no-video modes ask the presenter to stop
+/// encoding (`video_paused`, protocol 12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ViewMode {
+    Video,
+    /// "Wacom pen (no video)": an empty surface in the presenter's aspect ratio; pen on.
+    Pen,
+    /// "PowerPoint remote only (no video)": large remote buttons.
+    Remote,
+}
+
 impl MirrorApp {
     fn connect(&mut self, ctx: &egui::Context, target: ConnectInfo) {
         let repaint = ctx.clone();
+        self.video_paused_sent = None;
         self.error = None;
         self.scan = None;
         self.texture = None;
@@ -501,10 +527,12 @@ impl MirrorApp {
             if present.clicked() {
                 self.start_presenting(ui.ctx());
             }
+            self.pen_rights_button(ui, present.rect);
             ui.weak("Share this screen.");
             if !PRESENT_AVAILABLE {
                 ui.weak("Screen capture is not available on this platform yet.");
             }
+            self.pen_rights_box(ui);
             ui.add_space(16.0);
             if ui
                 .add(egui::Button::new("Viewer").min_size(egui::vec2(160.0, 28.0)))
@@ -554,6 +582,98 @@ impl MirrorApp {
         ui.add_space(24.0);
         self.footer(ui);
     }
+
+    /// The ✏ right of the Presenter button: green when the desktop's pen/keys permission is
+    /// remembered (we hold a restore token), grey when the next start will ask. Click: explain.
+    #[cfg(all(target_os = "linux", feature = "portal"))]
+    fn pen_rights_button(&mut self, ui: &mut egui::Ui, presenter: egui::Rect) {
+        let remembered = crate::remote_rights::remembered(&self.config_dir);
+        let color = if remembered {
+            egui::Color32::from_rgb(0, 180, 80)
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        let size = egui::vec2(36.0, 36.0);
+        let rect = egui::Rect::from_min_size(
+            presenter.right_center() + egui::vec2(8.0, -size.y / 2.0),
+            size,
+        );
+        let hover = if remembered {
+            "Pen and keys: permission remembered. Click for details."
+        } else {
+            "Pen and keys: the desktop will ask. Click for details."
+        };
+        let button = egui::Button::new(egui::RichText::new("✏").size(20.0).color(color))
+            .selected(self.pen_rights_open);
+        if ui.put(rect, button).on_hover_text(hover).clicked() {
+            self.pen_rights_open = !self.pen_rights_open;
+            self.pen_rights_note = None;
+        }
+    }
+
+    #[cfg(not(all(target_os = "linux", feature = "portal")))]
+    fn pen_rights_button(&mut self, _ui: &mut egui::Ui, _presenter: egui::Rect) {}
+
+    /// The info box the ✏ opens: what is remembered and a button to forget it.
+    #[cfg(all(target_os = "linux", feature = "portal"))]
+    fn pen_rights_box(&mut self, ui: &mut egui::Ui) {
+        if !self.pen_rights_open {
+            return;
+        }
+        let remembered = crate::remote_rights::remembered(&self.config_dir);
+        ui.add_space(8.0);
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_max_width(520.0);
+            if remembered {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0, 180, 80),
+                    "✏ Pen and keys: permission remembered",
+                );
+                ui.label(
+                    "Your desktop saved the permission (\"Allow restoring\" in KDE's dialog). \
+                     The presenter starts with screen and input together without asking, and \
+                     the viewer's pen and remote keys work right away.",
+                );
+            } else {
+                ui.strong("✏ Pen and keys: not remembered");
+                ui.label(
+                    "The presenter starts with screen sharing only. When the viewer switches \
+                     its pen on, the desktop asks to allow pointer and keyboard input (the \
+                     picture pauses for a moment). Tick \"Allow restoring\" (KDE) there, so it \
+                     is not asked again; this ✏ then turns green.",
+                );
+            }
+            ui.add_space(4.0);
+            let forget = ui
+                .add_enabled(
+                    remembered,
+                    egui::Button::new("Forget the pen and keys permission"),
+                )
+                .on_hover_text("The next presenter start asks again.");
+            if forget.clicked() {
+                self.pen_rights_note = Some(match crate::remote_rights::forget(&self.config_dir) {
+                    Ok(_) => "Forgotten. The next presenter start asks again (a running \
+                              presenter keeps its permission until it stops)."
+                        .into(),
+                    Err(e) => {
+                        tracing::warn!("could not forget the pen permission: {e:#}");
+                        format!("Could not forget the permission: {e:#}")
+                    }
+                });
+            }
+            if let Some(note) = &self.pen_rights_note {
+                ui.label(note);
+            }
+            ui.weak(
+                "MirrorWire deletes its own restore tokens. The desktop offers apps no way to \
+                 revoke a permission, so it may keep its record of the choice; remove it in the \
+                 desktop's settings if it lists one.",
+            );
+        });
+    }
+
+    #[cfg(not(all(target_os = "linux", feature = "portal")))]
+    fn pen_rights_box(&mut self, _ui: &mut egui::Ui) {}
 
     /// Start screen › Advanced: "Use the FilmCraft encoder", saved in `settings.json`. Here
     /// and not in the presenter window, because a presenter whose default encoder fails never
@@ -697,7 +817,10 @@ impl MirrorApp {
             return false;
         };
         let status = handle.status.lock_ok();
-        viewer_ui(status.connected, status.first_frame, self.has_picture()) == ViewerUi::Video
+        // Pen and remote-only modes need no picture (the presenter may not send one at all).
+        (self.view_mode != ViewMode::Video && status.connected)
+            || viewer_ui(status.connected, status.first_frame, self.has_picture())
+                == ViewerUi::Video
     }
 
     fn connecting_ui(&mut self, ui: &mut egui::Ui) {

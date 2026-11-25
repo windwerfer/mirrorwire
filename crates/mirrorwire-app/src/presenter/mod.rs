@@ -151,6 +151,8 @@ impl Drop for PresenterHandle {
 struct QuicSink {
     frames: mpsc::Sender<OutgoingFrame>,
     connected: watch::Receiver<bool>,
+    /// The viewer shows no video (`video_paused`): skip encoding like with no viewer.
+    paused: watch::Receiver<bool>,
     controls: Controls,
     next_id: u32,
 }
@@ -178,7 +180,7 @@ impl VideoSink for QuicSink {
     }
 
     fn wants_frames(&self) -> bool {
-        *self.connected.borrow()
+        *self.connected.borrow() && !*self.paused.borrow()
     }
 }
 
@@ -190,10 +192,19 @@ fn open_source(
     ctl: &Arc<Mutex<CaptureCtl>>,
     sink: &CursorSink,
 ) -> Result<Box<dyn FrameSource>> {
-    let (cursor, fps, mode) = {
+    let (cursor, fps, mode, want_input) = {
         let c = ctl.lock_ok();
-        (c.wanted_cursor(), c.prefs.fps.request(), c.prefs.mode)
+        (
+            c.wanted_cursor(),
+            c.prefs.fps.request(),
+            c.prefs.mode,
+            c.want_input,
+        )
     };
+    // Input (pen, remote keys in the capture session) only when the viewer switched its pen on,
+    // or when the desktop already remembers that permission (then no dialog appears). Otherwise
+    // the start asks for the screen only.
+    let with_input = want_input || input_remembered(config_dir, mode);
     let source: Box<dyn FrameSource> = match args.source {
         SourceKind::Test => {
             let (w, h) = if let Some(s) = &args.size {
@@ -212,10 +223,14 @@ fn open_source(
             let ctl_status = ctl.clone();
             let status: Arc<dyn Fn(String) + Send + Sync> =
                 Arc::new(move |line| ctl_status.lock_ok().remote_note = Some(line));
-            open_portal(args, config_dir, mode, cursor, fps, sink, &status)?
+            open_portal(
+                args, config_dir, mode, cursor, fps, sink, with_input, &status,
+            )?
         }
     };
     let mut c = ctl.lock_ok();
+    // The test pattern has no input to ask for; never reopen it for the pen.
+    c.asked_input = with_input || matches!(args.source, SourceKind::Test);
     c.asked_cursor = cursor;
     c.asked_mode = mode;
     c.asked_fps = fps;
@@ -271,7 +286,19 @@ fn effective_fps(asked: u32, negotiated: Option<u32>) -> u32 {
     }
 }
 
+/// The desktop remembers the pen/keys permission for this mode's combined session.
 #[cfg(all(target_os = "linux", feature = "portal"))]
+fn input_remembered(config_dir: &Path, mode: mirrorwire_media::source::CaptureMode) -> bool {
+    crate::remote_rights::combined_saved(config_dir, mode)
+}
+
+#[cfg(not(all(target_os = "linux", feature = "portal")))]
+fn input_remembered(_config_dir: &Path, _mode: mirrorwire_media::source::CaptureMode) -> bool {
+    false
+}
+
+#[cfg(all(target_os = "linux", feature = "portal"))]
+#[allow(clippy::too_many_arguments)]
 fn open_portal(
     args: &PresentArgs,
     config_dir: &Path,
@@ -279,6 +306,7 @@ fn open_portal(
     cursor: CursorCapture,
     fps: u32,
     sink: &CursorSink,
+    with_input: bool,
     remote_status: &Arc<dyn Fn(String) + Send + Sync>,
 ) -> Result<Box<dyn FrameSource>> {
     use mirrorwire_media::source::portal::{PortalOptions, PortalSource};
@@ -288,7 +316,7 @@ fn open_portal(
         cursor_sink: Some(sink.clone()),
         mode,
         fps,
-        input: Some(mirrorwire_media::source::portal::InputOptions {
+        input: with_input.then(|| mirrorwire_media::source::portal::InputOptions {
             restore_token_path: config_dir
                 .join(mirrorwire_media::source::portal::input_token_file(mode)),
             status: remote_status.clone(),
@@ -307,6 +335,7 @@ fn open_portal(
 }
 
 #[cfg(not(all(target_os = "linux", feature = "portal")))]
+#[allow(clippy::too_many_arguments)]
 fn open_portal(
     _args: &PresentArgs,
     _config_dir: &Path,
@@ -314,6 +343,7 @@ fn open_portal(
     _cursor: CursorCapture,
     _fps: u32,
     _sink: &CursorSink,
+    _with_input: bool,
     _remote_status: &Arc<dyn Fn(String) + Send + Sync>,
 ) -> Result<Box<dyn FrameSource>> {
     bail!("portal capture is only available on Linux builds with the `portal` feature; use --source test")
@@ -356,10 +386,12 @@ fn start_remote(
     ctl: &Arc<Mutex<CaptureCtl>>,
 ) -> Option<mpsc::Sender<mirrorwire_proto::control::RemoteInput>> {
     let ctl_mode = ctl.clone();
+    let ctl_asking = ctl.clone();
     let ctl = ctl.clone();
     Some(mirrorwire_media::source::remote::spawn_remote_injector(
-        config_dir.join("remote-desktop.token"),
+        config_dir.join(crate::remote_rights::SEPARATE_TOKEN_FILE),
         Arc::new(move |line| ctl.lock_ok().remote_note = Some(line)),
+        Arc::new(move |asking| ctl_asking.lock_ok().remote_asking = asking),
         Arc::new(move || {
             ctl_mode.lock_ok().asked_mode == mirrorwire_media::source::CaptureMode::Mirror
         }),
@@ -387,22 +419,45 @@ impl RemoteRoute {
     /// On Linux, pen input first passes the opt-in uinput pen (D26): while
     /// `CaptureCtl::pen_pressure` is on it goes to the virtual pen, everything else (and pen
     /// input when the pen cannot be created) to the portal.
+    ///
+    /// The viewer's Pen button (`PenMode`, and a stroke from a viewer whose button was already
+    /// on) reopens the capture together with input when it runs without; strokes are dropped
+    /// until that reopened session is in place, so no second dialog opens meanwhile.
     fn start(
         separate: Option<mpsc::Sender<mirrorwire_proto::control::RemoteInput>>,
         runtime: &tokio::runtime::Handle,
         ctl: &Arc<Mutex<CaptureCtl>>,
+        controls: &Controls,
     ) -> Self {
+        use mirrorwire_proto::control::RemoteInput;
         let (tx, mut rx) = mpsc::channel(64);
         let target: Arc<Mutex<Option<mpsc::Sender<_>>>> = Arc::new(Mutex::new(separate.clone()));
         let t = target.clone();
-        #[cfg(target_os = "linux")]
         let ctl = ctl.clone();
-        #[cfg(not(target_os = "linux"))]
-        let _ = ctl;
+        let controls = controls.clone();
         runtime.spawn(async move {
             #[cfg(target_os = "linux")]
             let mut pen = crate::pen::PenRouter::new(crate::pen::uinput_opener());
             while let Some(input) = rx.recv().await {
+                match input {
+                    RemoteInput::PenMode(on) => {
+                        if on {
+                            request_input(&ctl, &controls);
+                        }
+                        continue;
+                    }
+                    RemoteInput::Pointer { .. } => {
+                        // Pen already on in the viewer (e.g. after a reconnect): same as
+                        // switching it on now.
+                        if !ctl.lock_ok().want_input {
+                            request_input(&ctl, &controls);
+                        }
+                        if input_pending(&ctl.lock_ok()) {
+                            continue;
+                        }
+                    }
+                    RemoteInput::Key(_) => {}
+                }
                 #[cfg(target_os = "linux")]
                 let input = {
                     let enabled = ctl.lock_ok().pen_pressure;
@@ -441,6 +496,31 @@ impl RemoteRoute {
             ctl.lock_ok().remote_note = Some(note);
         }
     }
+}
+
+/// The viewer wants the pen: remember it for this run and, if the running capture has no input,
+/// reopen it together with pointer/keyboard input (the desktop's dialog shows then, with ours).
+fn request_input(ctl: &Mutex<CaptureCtl>, controls: &Controls) {
+    let restart = {
+        let mut c = ctl.lock_ok();
+        c.want_input = true;
+        let restart = c.needs_input_restart();
+        if restart {
+            c.remote_asking = true;
+        }
+        restart
+    };
+    if restart {
+        tracing::info!(
+            "viewer switched the pen on: reopening the capture with pointer and keyboard input"
+        );
+        controls.request_source_restart();
+    }
+}
+
+/// The capture is being reopened for input: pen strokes wait (are dropped) until it is in place.
+fn input_pending(c: &CaptureCtl) -> bool {
+    c.needs_input_restart() || (c.want_input && c.remote_asking)
 }
 
 /// Shared capture/encode/announce loop used by the CLI and the GUI.
@@ -491,7 +571,7 @@ fn present_session(
             tracing::info!("pen pressure on (virtual uinput pen on the first stroke)");
         }
     }
-    let route = RemoteRoute::start(start_remote(&config_dir, &ctl), runtime, &ctl);
+    let route = RemoteRoute::start(start_remote(&config_dir, &ctl), runtime, &ctl, &controls);
     route.set_source(source.as_ref(), &ctl);
     let remote_keys = Some(route.sender());
     let presenter = Presenter::start(
@@ -560,7 +640,11 @@ fn present_session(
         presenter.viewer_connected.clone(),
     )?;
 
-    ctl.lock_ok().viewer_display = Some(presenter.viewer_display.clone());
+    {
+        let mut c = ctl.lock_ok();
+        c.viewer_display = Some(presenter.viewer_display.clone());
+        c.video_paused = Some(presenter.video_paused.clone());
+    }
 
     let _advert = if args.no_mdns {
         None
@@ -582,6 +666,7 @@ fn present_session(
     let mut sink = QuicSink {
         frames: presenter.frames.clone(),
         connected: presenter.viewer_connected.clone(),
+        paused: presenter.video_paused.clone(),
         controls: controls.clone(),
         next_id: 0,
     };
@@ -637,6 +722,8 @@ fn present_session(
                     Err(e) => break Err(e),
                 }
                 route.set_source(source.as_ref(), &ctl);
+                // The reopened session (with input, when the pen asked for it) is in place.
+                ctl.lock_ok().remote_asking = false;
                 let fps = apply_negotiated_fps(source.as_ref(), &ctl, &settings);
                 let cursor = ctl.lock_ok().active_cursor;
                 presenter.update_stream_info(|info| {
@@ -1031,6 +1118,44 @@ mod tests {
         assert_eq!(effective_fps(240, Some(144)), 144);
         assert_eq!(effective_fps(240, None), 60);
         assert_eq!(effective_fps(30, None), 30);
+    }
+
+    #[test]
+    fn pen_on_reopens_the_capture_once_with_input() {
+        use std::sync::atomic::Ordering;
+        let ctl = Mutex::new(CaptureCtl::new(CapturePrefs::default()));
+        {
+            let mut c = ctl.lock_ok();
+            c.asked_cursor = CursorCapture::Metadata;
+            c.asked_fps = 60;
+        }
+        let controls = Controls::default();
+        assert!(!ctl.lock_ok().needs_restart());
+        // Started without input: switching the pen on reopens, and strokes wait meanwhile.
+        request_input(&ctl, &controls);
+        assert!(controls.restart_source.swap(false, Ordering::AcqRel));
+        {
+            let c = ctl.lock_ok();
+            assert!(c.want_input && c.remote_asking && c.needs_restart());
+            assert!(input_pending(&c));
+        }
+        // The reopened session carries input: done, strokes pass.
+        {
+            let mut c = ctl.lock_ok();
+            c.asked_input = true;
+            c.remote_asking = false;
+            assert!(!c.needs_restart());
+            assert!(!input_pending(&c));
+        }
+        // Pen on again (or a later stroke): no second reopen.
+        request_input(&ctl, &controls);
+        assert!(!controls.restart_source.load(Ordering::Acquire));
+        // Started with input already (permission remembered): pen on reopens nothing.
+        let ctl = Mutex::new(CaptureCtl::new(CapturePrefs::default()));
+        ctl.lock_ok().asked_input = true;
+        request_input(&ctl, &controls);
+        assert!(!controls.restart_source.load(Ordering::Acquire));
+        assert!(!input_pending(&ctl.lock_ok()));
     }
 
     #[test]

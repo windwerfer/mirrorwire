@@ -9,6 +9,9 @@ impl MirrorApp {
             return;
         };
         let status = handle.poll();
+        if status.capture.remote_asking {
+            pen_permission_dialog(ui.ctx());
+        }
 
         if ui.button("Stop presenting").clicked() {
             self.stop_presenting();
@@ -74,6 +77,12 @@ impl MirrorApp {
                                      after 10 s of silence.",
                                     quiet.as_secs_f32()
                                 ),
+                            );
+                        } else if status.viewer_connected && status.capture.video_paused {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(0, 180, 80),
+                                "A viewer is connected in pen or remote-only mode: no video is \
+                                 encoded or sent until it shows the picture again.",
                             );
                         } else if status.viewer_connected {
                             ui.colored_label(
@@ -235,6 +244,29 @@ impl MirrorApp {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(250));
     }
+}
+
+/// Shown while the desktop asks whether the viewer's pen may control the pointer (the viewer
+/// switched its pen on; the capture reopens with input). Closes by itself once answered.
+fn pen_permission_dialog(ctx: &egui::Context) {
+    egui::Window::new("✏ The viewer switched on the pen")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.label(
+                "Your desktop now asks whether MirrorWire may control the pointer and \
+                 keyboard (and which screen to share with it). Answer its dialog.",
+            );
+            ui.label(
+                "Tick \"Allow restoring\" (KDE) or \"Remember\" there, so it is not asked again: \
+                 the next presenter start then includes the pen without a dialog, and the ✏ \
+                 next to the Presenter button on the start screen turns green.",
+            );
+            ui.weak("The picture pauses for a moment while the capture reopens.");
+        });
+    // The answer arrives from the portal thread; look again soon.
+    ctx.request_repaint_after(std::time::Duration::from_millis(300));
 }
 
 pub(super) fn quality_controls(ui: &mut egui::Ui, app: &mut MirrorApp, live: &EncoderConfig) {

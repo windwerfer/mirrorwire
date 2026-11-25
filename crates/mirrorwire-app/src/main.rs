@@ -10,6 +10,8 @@ mod miracast_flow;
 #[cfg(target_os = "linux")]
 mod pen;
 mod presenter;
+#[cfg(all(target_os = "linux", feature = "portal"))]
+mod remote_rights;
 mod session;
 mod sync;
 mod viewer;

@@ -2,11 +2,28 @@
 
 ## Unreleased
 
+### Breaking
+- Protocol version 12: new `pen_mode` and `video_paused` control messages. Update the
+  presenter, the desktop viewer and the Android viewer together.
+
 ### Added
 - Start screen › Advanced: **Use the FilmCraft encoder**, remembered in `settings.json`
   (`filmcraft_encoder`). The GUI presenter then starts with FilmCraft instead of `auto`, so a
   machine whose VAAPI/x264 fails at once can still present. Always on in builds without
   FFmpeg.
+- Start screen: a **✏** next to the Presenter button shows whether the desktop's pen/keys
+  permission is remembered (green); click it for an explanation and **Forget the pen and
+  keys permission**.
+- Viewer ☰ menu (desktop and Android): **Wacom pen (no video)** and **PowerPoint remote
+  only (no video)**. The presenter then skips encoding and sending until the viewer shows the
+  picture again (resumes with a keyframe).
+- Presenter window: a dialog explains the desktop's pointer-permission prompt while the
+  capture reopens with input for the viewer's pen.
+
+### Changed
+- The presenter starts with screen sharing only. Pointer and keyboard permission are asked
+  when the viewer switches its pen on (the capture reopens once, the picture pauses for a
+  moment), or at start without a dialog when the desktop already remembers that permission.
 
 ### Fixed
 - Pen/touch and remote keys never worked on KDE: the presenter passed `persist_mode` and a

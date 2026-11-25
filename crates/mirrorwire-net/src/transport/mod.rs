@@ -442,6 +442,78 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pen_mode_reaches_the_presenter_and_is_rate_limited() {
+        use mirrorwire_proto::control::RemoteInput;
+        let dir = std::env::temp_dir().join(format!("mirrorwire-penmode-{}", std::process::id()));
+        let (tx, mut rx) = mpsc::channel(64);
+        let (presenter, id) = test_presenter_with(&dir, FecMode::Off, Some(tx));
+        let viewer = ViewerSession::connect_traced(
+            &Identity::generate().unwrap(),
+            &target_of(&presenter, &id),
+            "t",
+            test_display(),
+            &ConnectTrace::new(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        viewer.send_pen_mode(true);
+        viewer.send_pen_mode(false);
+        for want in [RemoteInput::PenMode(true), RemoteInput::PenMode(false)] {
+            let got = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap();
+            assert_eq!(got, Some(want));
+        }
+        // A toggle flood is cut to the per-second limit.
+        for i in 0..40 {
+            viewer.send_pen_mode(i % 2 == 0);
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut n = 0;
+        while rx.try_recv().is_ok() {
+            n += 1;
+        }
+        assert!(n <= 10, "{n} pen toggles got through");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn video_pause_follows_the_viewer_and_resets_when_it_leaves() {
+        let dir = std::env::temp_dir().join(format!("mirrorwire-pause-{}", std::process::id()));
+        let (presenter, id) = test_presenter_with(&dir, FecMode::Off, None);
+        let mut paused = presenter.video_paused.clone();
+        let viewer = ViewerSession::connect_traced(
+            &Identity::generate().unwrap(),
+            &target_of(&presenter, &id),
+            "t",
+            test_display(),
+            &ConnectTrace::new(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert!(!*paused.borrow());
+        let wait_for = |rx: &mut tokio::sync::watch::Receiver<bool>, want: bool| {
+            let mut rx = rx.clone();
+            async move {
+                tokio::time::timeout(Duration::from_secs(5), rx.wait_for(|v| *v == want))
+                    .await
+                    .expect("pause state did not arrive")
+                    .unwrap();
+            }
+        };
+        viewer.send_video_paused(true);
+        wait_for(&mut paused, true).await;
+        viewer.send_video_paused(false);
+        wait_for(&mut paused, false).await;
+        viewer.send_video_paused(true);
+        wait_for(&mut paused, true).await;
+        // The viewer leaves while paused: the next one must get video.
+        viewer.close();
+        wait_for(&mut paused, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remote_taps_reach_the_presenter_and_are_rate_limited() {
         use mirrorwire_proto::control::{RemoteInput, RemoteKey};
         let dir = std::env::temp_dir().join(format!("mirrorwire-remote-{}", std::process::id()));

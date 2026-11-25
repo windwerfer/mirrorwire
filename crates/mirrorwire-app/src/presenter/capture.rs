@@ -23,6 +23,14 @@ pub struct CaptureCtl {
     pub(super) cursor_note: Option<String>,
     /// State of the presenter remote (keyboard permission), for the window.
     pub(super) remote_note: Option<String>,
+    /// The desktop's pen/touch permission dialog is open: the capture is being reopened with
+    /// input, or the separate remote session is asking.
+    pub(super) remote_asking: bool,
+    /// The viewer switched its pen on in this run: from now on the capture is opened together
+    /// with pointer/keyboard input (one portal session, so the pen maps in Mirror and Extend).
+    pub(super) want_input: bool,
+    /// The current source was opened asking for input (wanted, or the permission remembered).
+    pub(super) asked_input: bool,
     /// Pen input goes to the virtual uinput pen (setting on and the check passed, D26).
     #[cfg(target_os = "linux")]
     pub(super) pen_pressure: bool,
@@ -31,6 +39,8 @@ pub struct CaptureCtl {
     pub(super) pen_note: Option<String>,
     /// Display size the viewer reported in hello (for the Extend hint).
     pub(super) viewer_display: Option<watch::Receiver<Option<DisplayInfo>>>,
+    /// The viewer shows no video (its pen or remote-only mode): encoding is skipped.
+    pub(super) video_paused: Option<watch::Receiver<bool>>,
     pub(super) negotiated_fps: Option<u32>,
     pub(super) source_desc: String,
     /// FEC setting and link feedback, shared with the transport.
@@ -50,11 +60,15 @@ impl CaptureCtl {
             active_cursor: CursorCapture::Embedded,
             cursor_note: None,
             remote_note: None,
+            remote_asking: false,
+            want_input: false,
+            asked_input: false,
             #[cfg(target_os = "linux")]
             pen_pressure: false,
             #[cfg(target_os = "linux")]
             pen_note: None,
             viewer_display: None,
+            video_paused: None,
             negotiated_fps: None,
             source_desc: String::new(),
         }
@@ -74,6 +88,12 @@ impl CaptureCtl {
         self.wanted_cursor() != self.asked_cursor
             || self.prefs.mode != self.asked_mode
             || self.prefs.fps.request() != self.asked_fps
+            || self.needs_input_restart()
+    }
+
+    /// The pen was switched on but the running capture was opened without input.
+    pub(super) fn needs_input_restart(&self) -> bool {
+        self.want_input && !self.asked_input
     }
 
     #[cfg_attr(not(feature = "gui"), allow(dead_code))]
@@ -83,11 +103,13 @@ impl CaptureCtl {
             cursor_mode: self.active_cursor.mode(),
             cursor_note: self.cursor_note.clone(),
             remote_note: self.remote_note.clone(),
+            remote_asking: self.remote_asking,
             #[cfg(target_os = "linux")]
             pen_pressure: self.pen_pressure,
             #[cfg(target_os = "linux")]
             pen_note: self.pen_note.clone(),
             viewer_display: self.viewer_display.as_ref().and_then(|rx| *rx.borrow()),
+            video_paused: self.video_paused.as_ref().is_some_and(|rx| *rx.borrow()),
             fps_requested: self.asked_fps,
             fps_negotiated: self.negotiated_fps,
             fec: self.fec.snapshot(),
@@ -104,6 +126,8 @@ pub struct CaptureStatus {
     pub cursor_mode: CursorMode,
     pub cursor_note: Option<String>,
     pub remote_note: Option<String>,
+    /// The desktop is asking right now whether the viewer's pen may control the pointer.
+    pub remote_asking: bool,
     /// Pen input uses the virtual uinput pen with pressure (D26).
     #[cfg(target_os = "linux")]
     pub pen_pressure: bool,
@@ -111,6 +135,8 @@ pub struct CaptureStatus {
     pub pen_note: Option<String>,
     /// The viewer's display size, once it has connected.
     pub viewer_display: Option<DisplayInfo>,
+    /// The viewer asked for no video (Wacom pen or PowerPoint remote mode).
+    pub video_paused: bool,
     pub fps_requested: u32,
     pub fps_negotiated: Option<u32>,
     /// FEC setting, applied overhead and what the viewer reports.

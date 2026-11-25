@@ -33,10 +33,15 @@ pub fn separate_session_maps_pointer(mode: super::CaptureMode) -> bool {
     mode == super::CaptureMode::Mirror
 }
 
+/// Told `true` while the desktop's permission dialog for pen/touch (pointer) input is open
+/// and `false` once it is answered, so the presenter window can explain it.
+pub type AskingSink = Arc<dyn Fn(bool) + Send + Sync>;
+
 /// Start the injector task on the current tokio runtime. Send taps into the returned sender.
 pub fn spawn_remote_injector(
     restore_token_path: PathBuf,
     status: RemoteStatusSink,
+    asking: AskingSink,
     pointer_mapped: PointerMapped,
 ) -> mpsc::Sender<RemoteInput> {
     let (tx, mut rx) = mpsc::channel::<RemoteInput>(64);
@@ -46,6 +51,10 @@ pub fn spawn_remote_injector(
         // Last pointer failure shown, so a hovering pen does not rewrite the line 120x/s.
         let mut pointer_refused = false;
         while let Some(input) = rx.recv().await {
+            if matches!(input, RemoteInput::PenMode(_)) {
+                // A mode change is the app's business; it must never open a session here.
+                continue;
+            }
             let wants_pointer = matches!(input, RemoteInput::Pointer { .. });
             if wants_pointer && !pointer_mapped() {
                 if !pointer_refused {
@@ -77,7 +86,10 @@ pub fn spawn_remote_injector(
                 } else {
                     "presenter remote: asking the desktop for permission…".into()
                 });
-                match open_session(&restore_token_path, wants_pointer).await {
+                asking(wants_pointer);
+                let opened = open_session(&restore_token_path, wants_pointer).await;
+                asking(false);
+                match opened {
                     Ok(s) => {
                         status(if s.stream.is_some() {
                             "presenter remote: ready (keys and pen/touch pointer)".into()
@@ -232,6 +244,9 @@ pub(super) async fn inject(
 ) -> Result<()> {
     match input {
         RemoteInput::Key(key) => tap(proxy, session, key).await,
+        // Handled by the app's input route (it reopens the capture with input); nothing to
+        // inject.
+        RemoteInput::PenMode(_) => Ok(()),
         // The portal has no pressure (no tablet device type); `pressure` goes to the opt-in
         // uinput pen in the app instead (D26).
         RemoteInput::Pointer { phase, x, y, .. } => {

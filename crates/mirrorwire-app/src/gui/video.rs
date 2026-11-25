@@ -39,6 +39,15 @@ impl MirrorApp {
             }
         }
         let status = handle.status.lock_ok().clone();
+        // Tell the presenter whether we show video (again after every reconnect).
+        let want_pause = self.view_mode != ViewMode::Video;
+        if let Some(tx) = &status.control {
+            if self.video_paused_sent != Some(want_pause) {
+                let _ =
+                    tx.send(mirrorwire_proto::control::Control::VideoPaused { paused: want_pause });
+                self.video_paused_sent = Some(want_pause);
+            }
+        }
 
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
@@ -52,7 +61,10 @@ impl MirrorApp {
         } else {
             (0.0, 0.0)
         };
-        if tex_w > 0.0 && tex_h > 0.0 {
+        if self.view_mode == ViewMode::Pen {
+            picture_rect = pen_surface(ui, rect, &status);
+        }
+        if self.view_mode == ViewMode::Video && tex_w > 0.0 && tex_h > 0.0 {
             let native_pts = egui::vec2(tex_w / ppp, tex_h / ppp);
             let draw_size = if self.pixel_exact {
                 native_pts
@@ -149,7 +161,10 @@ impl MirrorApp {
             );
         }
 
-        if self.show_remote {
+        self.view_menu(&ctx, &status);
+        if self.view_mode == ViewMode::Remote {
+            remote_only_buttons(&ctx, &status);
+        } else if self.show_remote {
             egui::Area::new(egui::Id::unique("remote_buttons"))
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
                 .show(&ctx, |ui| {
@@ -159,6 +174,13 @@ impl MirrorApp {
                             .selected(self.pen_mode);
                         if ui.add(pen).clicked() {
                             self.pen_mode = !self.pen_mode;
+                            // Tell the presenter at once (protocol 12): it asks its desktop
+                            // for pointer permission now, not on the first stroke.
+                            if let Some(tx) = &status.control {
+                                let _ = tx.send(mirrorwire_proto::control::Control::PenMode {
+                                    on: self.pen_mode,
+                                });
+                            }
                         }
                         for key in mirrorwire_proto::control::RemoteKey::ALL {
                             let button =
@@ -215,6 +237,53 @@ impl MirrorApp {
             self.disconnect(&ctx);
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    }
+
+    /// The ☰ menu at the top right: the two no-video modes.
+    fn view_menu(&mut self, ctx: &egui::Context, status: &crate::viewer::ViewerStatus) {
+        let mut chosen = None;
+        egui::Area::new(egui::Id::unique("view_menu"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
+            .show(ctx, |ui| {
+                ui.menu_button(egui::RichText::new("☰").size(24.0), |ui| {
+                    let mut pen = self.view_mode == ViewMode::Pen;
+                    if ui.checkbox(&mut pen, "Wacom pen (no video)").changed() {
+                        chosen = Some(if pen { ViewMode::Pen } else { ViewMode::Video });
+                    }
+                    let mut remote = self.view_mode == ViewMode::Remote;
+                    if ui
+                        .checkbox(&mut remote, "PowerPoint remote only (no video)")
+                        .changed()
+                    {
+                        chosen = Some(if remote {
+                            ViewMode::Remote
+                        } else {
+                            ViewMode::Video
+                        });
+                    }
+                    ui.weak("Without video the presenter encodes and sends nothing.");
+                });
+            });
+        if let Some(mode) = chosen {
+            self.set_view_mode(mode, status);
+        }
+    }
+
+    /// Switch the video area's mode. The pen is on exactly in "Wacom pen" mode (switching
+    /// into it asks the presenter's desktop for pointer permission, protocol 12).
+    fn set_view_mode(&mut self, mode: ViewMode, status: &crate::viewer::ViewerStatus) {
+        if mode == self.view_mode {
+            return;
+        }
+        let pen = mode == ViewMode::Pen;
+        let pen_changed = pen != self.pen_mode && (pen || self.view_mode == ViewMode::Pen);
+        self.view_mode = mode;
+        if pen_changed {
+            self.pen_mode = pen;
+            if let Some(tx) = &status.control {
+                let _ = tx.send(mirrorwire_proto::control::Control::PenMode { on: pen });
+            }
+        }
     }
 
     /// Pen/touch/mouse as the presenter's pointer (pen mode only): down/up on the reliable
@@ -342,4 +411,85 @@ impl MirrorApp {
             );
         }
     }
+}
+
+/// "Wacom pen (no video)": an empty surface in the presenter's aspect ratio that stands for its
+/// whole screen. Returns it as the rectangle pen positions are mapped through.
+fn pen_surface(
+    ui: &egui::Ui,
+    area: egui::Rect,
+    status: &crate::viewer::ViewerStatus,
+) -> Option<egui::Rect> {
+    let stream = status.stream.as_ref();
+    let w = status
+        .native_width
+        .max(stream.map(|s| s.width).unwrap_or(0));
+    let h = status
+        .native_height
+        .max(stream.map(|s| s.height).unwrap_or(0));
+    // Leave room for the ☰ button above and the hint below.
+    let inner = area.shrink2(egui::vec2(16.0, 56.0));
+    let (l, t, fw, fh) = mirrorwire_proto::control::fit_rect(
+        (inner.left(), inner.top(), inner.width(), inner.height()),
+        w,
+        h,
+    )?;
+    let surface = egui::Rect::from_min_size(egui::pos2(l, t), egui::vec2(fw, fh));
+    let painter = ui.painter();
+    painter.rect_filled(surface, 6.0, egui::Color32::from_gray(28));
+    painter.rect_stroke(
+        surface,
+        6.0,
+        egui::Stroke::new(2.0, egui::Color32::from_gray(90)),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        surface.center_bottom() + egui::vec2(0.0, 22.0),
+        egui::Align2::CENTER_CENTER,
+        format!("✏ Wacom pen: this area is the presenter's screen ({w}x{h}). No video is sent."),
+        egui::FontId::proportional(15.0),
+        egui::Color32::from_gray(160),
+    );
+    Some(surface)
+}
+
+/// "PowerPoint remote only (no video)": the four remote keys as large buttons.
+fn remote_only_buttons(ctx: &egui::Context, status: &crate::viewer::ViewerStatus) {
+    use mirrorwire_proto::control::{Control, RemoteKey};
+    egui::Area::new(egui::Id::unique("remote_only"))
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new("PowerPoint remote (no video)")
+                        .size(20.0)
+                        .color(egui::Color32::from_gray(170)),
+                );
+                ui.add_space(16.0);
+                let send = |key: RemoteKey| {
+                    if let Some(tx) = &status.control {
+                        let _ = tx.send(Control::RemoteKey { key });
+                    }
+                };
+                ui.horizontal(|ui| {
+                    for key in [RemoteKey::Previous, RemoteKey::Next] {
+                        let b = egui::Button::new(egui::RichText::new(key.label()).size(36.0))
+                            .min_size(egui::vec2(260.0, 180.0));
+                        if ui.add(b).clicked() {
+                            send(key);
+                        }
+                    }
+                });
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    for key in [RemoteKey::Space, RemoteKey::Escape] {
+                        let b = egui::Button::new(egui::RichText::new(key.label()).size(24.0))
+                            .min_size(egui::vec2(260.0, 72.0));
+                        if ui.add(b).clicked() {
+                            send(key);
+                        }
+                    }
+                });
+            });
+        });
 }

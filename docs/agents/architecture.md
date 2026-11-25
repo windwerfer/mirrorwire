@@ -125,6 +125,7 @@ macOS: `~/Library/Application Support/mirrorwire`), overridable with `--config-d
 | `identity.cert.der`, `identity.key.der` | both | per-install self-signed cert and key (key file mode 0600) |
 | `paired_viewers.json` | presenter | fingerprints and names of viewers that showed the pairing code |
 | `portal_restore_token` | presenter (Linux) | ScreenCast restore token, so the share dialog appears once |
+| `portal_restore_token_input`, `portal_restore_token_extend_input`, `remote-desktop.token` | presenter (Linux) | RemoteDesktop restore tokens (screen + pen/keys permission). The start screen's ✏ is green while one exists; "Forget the pen and keys permission" deletes them |
 | `settings.json` | presenter | Saved UDP port from the start-screen field. Overridden by `--port` or `MIRRORWIRE_PORT` for one run. |
 
 Deleting the directory resets identity and pairings; viewers then see a new fingerprint.

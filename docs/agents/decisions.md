@@ -80,6 +80,23 @@ Newest first. Add an entry when the owner decides something non-obvious.
   with `persist_mode` 0 to make the desktop drop it (the spec does not say a token passed with
   mode 0 is invalidated without a new one; untestable here). Not tested: no portal on the build
   box; needs a KDE run.
+- **2026-11-25 (pen permission only when the pen is switched on; protocol 12; amends the
+  2026-11-18 "ONE RemoteDesktop session" entry):** owner choices. The presenter starts with a
+  plain ScreenCast session unless this mode's combined restore token exists (then it starts
+  combined, no dialog). The viewer reports its Pen button at once (`pen_mode`); on `true` the
+  presenter reopens the capture as the combined capture + input session (`CaptureCtl::
+  want_input`/`asked_input`, `RemoteRoute`), shows its own dialog meanwhile and drops strokes
+  until the new session is routed. Rejected: a separate input session while capture keeps
+  running (no dialog-free reopen, but pen only in Mirror; kept as the fallback when the
+  combined session fails); asking on the first stroke instead of `pen_mode` (owner wanted the
+  dialog when the pen is switched on). Also new: the viewer's ☰ menu with "Wacom pen (no
+  video)" and "PowerPoint remote only (no video)"; both send `video_paused`, and the presenter
+  then skips encoding (`VideoSink::wants_frames`), resuming with a keyframe. Pen positions in
+  the Wacom mode map through a surface of the presenter's aspect ratio
+  (`control::fit_rect`). Rejected: only hiding the video in the viewer (owner: save CPU and
+  Wi-Fi); stretching the whole window (distorts strokes). Known gap: the pen sends positions
+  only while pressed (no hover), unlike a real tablet. Not tested: no portal, pen or Android
+  device on the build box.
 - **2026-11-22 (D26, opt-in pen pressure via uinput, amends D1):** owner decision (Thomas): uinput may be used only as an explicit opt-in that is off by default. Checked first against the official docs whether pressure can go through the portal: the xdg-desktop-portal RemoteDesktop page (version 2) defines device types KEYBOARD=1, POINTER=2, TOUCHSCREEN=4 and Notify* methods without pressure, tilt or distance; `ConnectToEIS` hands over a libei connection, and the libei protocol docs list an `ei_stylus` interface (pressure, distance, tilt, tip/proximity), but no KDE/GNOME release note or doc read here says the compositor offers it through the portal, and `reis` 0.7.1 (MIT, our only pure-Rust libei option) has no stylus module. So uinput (kernel docs: uinput.rst, event-codes.rst) with the `evdev` crate (Apache-2.0 OR MIT; its `VirtualDevice` keeps our code free of `unsafe`, D15). Fix text: udev rule with `TAG+="uaccess"` (systemd sd-login: access tied to the active seat session; the same pattern systemd's own `70-uaccess.rules` uses for e.g. `rfkill`), file `/etc/udev/rules.d/70-mirrorwire-uinput.rules` so it sorts before `73-seat-late.rules`, which applies the tag; `OPTIONS+="static_node=uinput"` so the tag also reaches the static node that loads the module on first access (udev(7)); `udevadm control --reload` + `udevadm trigger --action=change --sysname-match=uinput` (udevadm(8): a reload alone does not touch existing devices). Rejected for the rule: `GROUP="input"` (membership also allows reading every keyboard and mouse, and needs a re-login), `MODE="0666"` (every user and service). Inside the Flatpak `/dev/uinput` is only visible with `--device=all`: Flatpak's device list is dri, input (`/dev/input` only), usb, kvm, shm, all, so nothing narrower exists; it is a user override, never in the manifest (D2 unchanged). Rejected alternatives for the feature: always-on uinput, no pressure, portal-only (see the table). Not tested: no uinput access, pen or KDE session on the build box; the device, KWin's mapping of the virtual pen to a screen, and Android's pressure values are unverified.
 - **2026-11-22 (D25, Flatpak hostname1 access):** owner approved
   `--system-talk-name=org.freedesktop.hostname1` for the Flatpak, so the "Name shown on
