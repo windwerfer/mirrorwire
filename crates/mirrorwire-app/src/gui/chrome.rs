@@ -194,4 +194,105 @@ mod tests {
         o.show_stats = false;
         assert!(!o.stats_visible() && o.powerpoint_visible());
     }
+
+    /// One headless egui frame (no window, no GL): egui runs UI code on a plain `Context`.
+    fn frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        mut ui_fn: impl FnMut(&mut egui::Ui),
+    ) -> egui::FullOutput {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| ui_fn(ui));
+        // Nothing uploads textures here; egui panics if the delta is dropped unhandled.
+        out.textures_delta.clear();
+        out
+    }
+
+    fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        vec![egui::Event::PointerMoved(pos), button(true), button(false)]
+    }
+
+    #[test]
+    fn icon_names_are_the_accessible_labels() {
+        assert_eq!(Icon::Menu.name(), "Menu");
+        assert_eq!(Icon::Pen.name(), "Pen");
+        assert_eq!(Icon::Disconnect.name(), "Disconnect");
+    }
+
+    #[test]
+    fn the_corner_column_stacks_three_buttons_at_the_right_edge() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let ctx = egui::Context::default();
+        let mut menu_rect = None;
+        let out = frame(&ctx, vec![], |ui| {
+            menu_rect = Some(corner(ui, screen, 20.0, false).menu.rect);
+        });
+        let r = menu_rect.unwrap();
+        assert_eq!(r.size(), egui::vec2(BUTTON, BUTTON));
+        assert_eq!(r.right(), 800.0 - MARGIN);
+        assert_eq!(r.top(), 20.0);
+        assert_eq!(COLUMN_WIDTH, BUTTON + 2.0 * MARGIN);
+        // Three rounded boxes and the icon shapes were painted.
+        assert!(!out.shapes.is_empty());
+    }
+
+    #[test]
+    fn clicking_a_corner_button_reports_only_that_button() {
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let centre = |i: f32| {
+            egui::pos2(
+                screen.right() - MARGIN - BUTTON / 2.0,
+                8.0 + BUTTON / 2.0 + i * (BUTTON + GAP),
+            )
+        };
+        for (i, want_pen, want_disc) in
+            [(0.0, false, false), (1.0, true, false), (2.0, false, true)]
+        {
+            let ctx = egui::Context::default();
+            // First frame lays the widgets out, the click lands on the second.
+            frame(&ctx, vec![], |ui| {
+                corner(ui, screen, 8.0, false);
+            });
+            let mut menu_clicked = false;
+            let (mut pen, mut disc) = (false, false);
+            frame(&ctx, click_at(centre(i)), |ui| {
+                let c = corner(ui, screen, 8.0, i == 1.0);
+                menu_clicked = c.menu.clicked();
+                pen = c.pen_clicked;
+                disc = c.disconnect_clicked;
+            });
+            assert_eq!(menu_clicked, i == 0.0, "menu for button {i}");
+            assert_eq!((pen, disc), (want_pen, want_disc), "button {i}");
+        }
+    }
+
+    #[test]
+    fn every_icon_paints_something_inside_its_square() {
+        let ctx = egui::Context::default();
+        for icon in [Icon::Menu, Icon::Pen, Icon::Disconnect] {
+            let out = frame(&ctx, vec![], |ui| {
+                let r = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(40.0, 40.0));
+                paint_icon(ui.painter(), r, icon, egui::Color32::WHITE);
+            });
+            assert!(
+                out.shapes
+                    .iter()
+                    .any(|s| !matches!(s.shape, egui::Shape::Noop)),
+                "{icon:?}"
+            );
+        }
+    }
 }
