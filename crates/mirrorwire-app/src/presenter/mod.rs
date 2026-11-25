@@ -459,7 +459,7 @@ impl RemoteRoute {
         separate: Option<mpsc::Sender<mirrorwire_proto::control::RemoteInput>>,
         ctl: &Arc<Mutex<CaptureCtl>>,
         controls: &Controls,
-        open: RouteOpener,
+        #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] open: RouteOpener,
     ) -> Result<Self> {
         use mirrorwire_proto::control::RemoteInput;
         let (tx, mut rx) = mpsc::channel(64);
@@ -467,8 +467,6 @@ impl RemoteRoute {
         let t = target.clone();
         let ctl = ctl.clone();
         let controls = controls.clone();
-        #[cfg(not(target_os = "linux"))]
-        let _ = open;
         std::thread::Builder::new()
             .name("remote-input".into())
             .spawn(move || {
