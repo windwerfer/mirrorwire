@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fixed: after the capture was reopened (Mirror/Extend, cursor or frame-rate change, also by a
+  pen tap on the presenter window in Mirror mode) the Linux presenter could hang with no video
+  until restarted, with no dialog. All portal calls now share one long-lived runtime, so the
+  portal's D-Bus connection no longer dies with the first capture. Same fix for the Flatpak and
+  native builds.
+
 - Fixed: pressing **Pen** on the viewer could stop the Linux presenter's video until it was
   restarted (the process kept running). The presenter's control reader waited for the input
   path to take each pen press and release; while it waited, the viewer looked silent and the

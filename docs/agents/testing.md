@@ -625,6 +625,9 @@ screen**, not logs. So:
   Unit guards: `undrained_pen_input_does_not_stop_the_video` (net, e2e),
   `input_forward_tests` (net), `a_blocking_pen_device_does_not_stall_the_network_runtime`
   (app), `the_fallback_injector_never_opens_a_session_for_the_pointer` (media, `portal`).
+  Then, while the viewer is connected, change Cursor or Mirror/Extend in the presenter window
+  (or tap it from the tablet in pen mode): the capture must come back within a few seconds
+  without a restart (guard: `the_portal_runtime_outlives_the_thread_that_first_used_it`).
 
 ## 5. CI and artifacts
 
