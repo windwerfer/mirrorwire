@@ -441,6 +441,70 @@ mod tests {
         }
     }
 
+    /// Owner report t316u: pressing Pen on the tablet stopped the video until the presenter
+    /// was restarted. Input that nobody drains (a portal dialog waiting, a hung injector, a
+    /// blocking device) must never stop the control reader, because that reader is what tells
+    /// the send loop the viewer is still there: a silent viewer pauses the video.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn undrained_pen_input_does_not_stop_the_video() {
+        use mirrorwire_proto::control::PointerPhase;
+        let dir = std::env::temp_dir().join(format!("mirrorwire-pen-stall-{}", std::process::id()));
+        // Room for one input, and nobody ever reads it.
+        let (tx, _never_drained) = mpsc::channel(1);
+        let (presenter, id) = test_presenter_with(&dir, FecMode::Off, Some(tx));
+        let viewer = ViewerSession::connect_traced(
+            &Identity::generate().unwrap(),
+            &target_of(&presenter, &id),
+            "t",
+            test_display(),
+            &ConnectTrace::new(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        for _ in 0..5 {
+            viewer.send_pointer(PointerPhase::Down, 10, 20, None);
+            viewer.send_pointer(PointerPhase::Up, 10, 20, None);
+        }
+        // Longer than the viewer-silent threshold: the viewer keeps pinging meanwhile.
+        tokio::time::sleep(link::VIEWER_SILENT + Duration::from_millis(700)).await;
+        assert_eq!(
+            presenter.fec.snapshot().viewer_silent_for(),
+            None,
+            "the control reader stopped reading behind the input channel"
+        );
+        let got_video = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut frame_id = 1;
+            loop {
+                presenter
+                    .frames
+                    .send(OutgoingFrame {
+                        frame_id,
+                        keyframe: true,
+                        data: Bytes::from(vec![7u8; 1_000]),
+                        capture_us: 1,
+                        encoded_us: 2,
+                    })
+                    .await
+                    .unwrap();
+                frame_id += 1;
+                if let Ok(Ok(d)) =
+                    tokio::time::timeout(Duration::from_millis(50), viewer.conn.read_datagram())
+                        .await
+                {
+                    if d.first() == Some(&mirrorwire_proto::fragment::WIRE_VERSION) {
+                        return;
+                    }
+                }
+            }
+        })
+        .await;
+        assert!(got_video.is_ok(), "video stopped after undrained pen input");
+        viewer.close();
+        presenter.close();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn pen_mode_reaches_the_presenter_and_is_rate_limited() {
         use mirrorwire_proto::control::RemoteInput;

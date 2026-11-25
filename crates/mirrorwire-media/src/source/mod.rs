@@ -82,6 +82,8 @@ pub mod camera;
 #[allow(unsafe_code)]
 pub mod portal;
 #[cfg(all(target_os = "linux", feature = "portal"))]
+pub mod portal_rt;
+#[cfg(all(target_os = "linux", feature = "portal"))]
 pub mod remote;
 pub mod testpattern;
 

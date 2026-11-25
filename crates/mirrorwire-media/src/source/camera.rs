@@ -147,9 +147,9 @@ mod scanner {
         T: Send + 'static,
         F: Fn(usize, usize, &[u8]) -> Option<T> + Send + 'static,
     {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
+        // The shared portal runtime: a runtime of our own would take ashpd's D-Bus
+        // connection with it when this scan ends (see `portal_rt`).
+        let rt = crate::source::portal_rt::portal_runtime()?;
         let _ = events.send(ScanEvent::Status("asking for camera access...".into()));
         let fd = rt.block_on(open_camera())?;
         let _ = events.send(ScanEvent::Status(

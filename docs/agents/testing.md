@@ -616,6 +616,18 @@ screen**, not logs. So:
   draw in Krita from the Android viewer with light and hard strokes, and check that "MirrorWire
   virtual pen" shows in System Settings → Drawing Tablet. Then run the undo commands and check
   again (it must fail, and pen mode must still work as a plain pointer).
+- Pen must never stop the video (owner report t316u, 2026-11-25), not run yet: start sharing,
+  connect the Android viewer, press **Pen** and draw for 30 s, with pen pressure off and then
+  on. The tablet picture must keep moving (an on-screen clock in the shared screen shows it)
+  and the presenter log must not say "viewer silent … video paused". With pen pressure off and
+  the combined session refused, no second "choose the screen" dialog may appear; the window
+  shows "pen/touch is not available: capture and input could not share one portal session".
+  Unit guards: `undrained_pen_input_does_not_stop_the_video` (net, e2e),
+  `input_forward_tests` (net), `a_blocking_pen_device_does_not_stall_the_network_runtime`
+  (app), `the_fallback_injector_never_opens_a_session_for_the_pointer` (media, `portal`).
+  Then, while the viewer is connected, change Cursor or Mirror/Extend in the presenter window
+  (or tap it from the tablet in pen mode): the capture must come back within a few seconds
+  without a restart (guard: `the_portal_runtime_outlives_the_thread_that_first_used_it`).
 
 ## 5. CI and artifacts
 
