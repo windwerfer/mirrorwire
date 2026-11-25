@@ -379,17 +379,24 @@ fn stream_info_from(encoder: &Encoder, fps: u32, cursor: CursorCapture) -> Strea
 }
 
 /// The presenter remote's fallback when capture and input cannot share one portal session:
-/// key taps through a separate key-only RemoteDesktop session (Linux with the portal feature;
-/// pen/touch there is refused with a note, see `remote.rs`); elsewhere the taps are dropped.
+/// a separate RemoteDesktop session for key taps, and for pen/touch in Mirror mode only (Linux
+/// with the portal feature; see `remote.rs`); elsewhere the taps are dropped. It runs on the
+/// portal runtime, so a permission dialog nobody answers cannot hold up anything else.
 #[cfg(all(target_os = "linux", feature = "portal"))]
 fn start_remote(
     config_dir: &std::path::Path,
     ctl: &Arc<Mutex<CaptureCtl>>,
 ) -> Option<mpsc::Sender<mirrorwire_proto::control::RemoteInput>> {
     let note = ctl.clone();
+    let ctl_asking = ctl.clone();
+    let ctl_mode = ctl.clone();
     match mirrorwire_media::source::remote::spawn_remote_injector(
         config_dir.join(crate::remote_rights::SEPARATE_TOKEN_FILE),
         Arc::new(move |line| note.lock_ok().remote_note = Some(line)),
+        Arc::new(move |asking| ctl_asking.lock_ok().remote_asking = asking),
+        Arc::new(move || {
+            ctl_mode.lock_ok().asked_mode == mirrorwire_media::source::CaptureMode::Mirror
+        }),
     ) {
         Ok(tx) => Some(tx),
         Err(e) => {
@@ -1142,6 +1149,44 @@ mod tests {
     use crate::capture_prefs::{CursorPref, FpsPref};
     use mirrorwire_proto::fec::FecMode;
     use std::time::Duration;
+
+    /// Owner report t316u: the separate pointer session may sit on a permission dialog nobody
+    /// answers (or one that was refused or hangs); its channel then never drains. The route
+    /// must keep draining its own channel, so the network side's `try_send` never fails or
+    /// waits, and the dropped input costs nothing but the strokes themselves.
+    #[test]
+    fn an_unanswered_pointer_dialog_does_not_back_up_the_route() {
+        use mirrorwire_proto::control::{PointerPhase, RemoteInput, RemoteKey};
+        let ctl = Arc::new(Mutex::new(CaptureCtl::new(CapturePrefs::default())));
+        {
+            let mut c = ctl.lock_ok();
+            c.want_input = true;
+            c.asked_input = true;
+        }
+        // The injector's channel: capacity 1, never read (the dialog is open).
+        let (stuck_tx, _stuck_rx) = mpsc::channel(1);
+        let route = RemoteRoute::start(Some(stuck_tx), &ctl, &Controls::default()).unwrap();
+        let input = route.sender();
+        for i in 0..400u32 {
+            let msg = if i % 3 == 0 {
+                RemoteInput::Key(RemoteKey::Next)
+            } else {
+                RemoteInput::Pointer {
+                    phase: if i % 3 == 1 {
+                        PointerPhase::Down
+                    } else {
+                        PointerPhase::Up
+                    },
+                    x: 1,
+                    y: 2,
+                    pressure: None,
+                }
+            };
+            // Never blocks, and never finds the route's own channel full.
+            assert!(input.try_send(msg).is_ok(), "route backed up at input {i}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 
     /// Owner report t316u: a pen input path that blocks (here: creating the virtual pen
     /// hangs, as a stuck `/dev/uinput` open would) must not hold up the runtime that reads

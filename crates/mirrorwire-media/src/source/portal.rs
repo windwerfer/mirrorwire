@@ -471,7 +471,7 @@ async fn start_session(opts: &PortalOptions) -> Result<(Held, Negotiated)> {
                 tracing::warn!("combined capture + input session unavailable: {e:#}");
                 input_fallback = Some(format!(
                     "presenter remote: the capture session could not carry input ({e:#}); \
-                     keys use a separate session; pen/touch needs the shared one)"
+                     using a separate session (pen/touch then works in Mirror mode only)"
                 ));
             }
         }

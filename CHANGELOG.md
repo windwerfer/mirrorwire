@@ -24,10 +24,9 @@
 - The presenter starts with screen sharing only. Pointer and keyboard permission are asked
   when the viewer switches its pen on (the capture reopens once, the picture pauses for a
   moment), or at start without a dialog when the desktop already remembers that permission.
-- When capture and input cannot share one portal session, the separate fallback
-  session is now keys only. Pen/touch there shows a note instead of starting a second
-  screen-cast session (and dialog) while the capture runs. The opt-in virtual pen (D26) is not
-  affected.
+- The separate fallback session for pen/touch (Mirror mode only) and keys now runs on the
+  shared portal runtime, and nothing waits for its permission dialog: while it is open or
+  unanswered, pen strokes are dropped and the video keeps going.
 - Viewers (Android and desktop): the top-right corner of the video always shows three icons,
   menu (☰), Pen and Disconnect, replacing Android's Disconnect and Pen text buttons and the
   desktop's Pen button in the remote row. The menu holds Pen, PowerPoint mode (the

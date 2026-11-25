@@ -1,19 +1,24 @@
 //! Presenter remote: taps keys (Right, Left, Space, Escape) and moves a pen/finger pointer
 //! through the xdg-desktop-portal RemoteDesktop interface. No uinput, no root (decisions D1);
 //! the portal asks the user once (the restore token is kept so the dialog does not return) and
-//! works inside the Flatpak sandbox.
+//! works inside the Flatpak sandbox. The session opens lazily on the first input, so a presenter
+//! that nobody uses as a remote never shows the dialog. A key-only session is upgraded (closed
+//! and reopened, one more dialog) when the first pointer event arrives: absolute pointer motion
+//! is addressed to a screen-cast stream, so the pointer session also selects a monitor source.
 //!
-//! Normally capture and input share one session (`portal.rs`), and [`inject`] runs there. The
-//! separate injector here is the fallback when that combined session was refused or is
-//! unavailable. It is **key-only**: absolute pointer motion is addressed to a screen-cast
-//! stream of the injecting session, so pen/touch would need a second ScreenCast session
-//! (`SelectSources` + `Start`, another "choose the screen" dialog) started while the capture
-//! runs. Nothing in the portal documentation promises that a second cast leaves the running
-//! one alone, and the presenter must never risk its video for input (owner report t316u), so
-//! pen/touch is refused with a note instead. The key session opens lazily on the first tap.
+//! This is the fallback when capture and input cannot share one session (`portal.rs`); the
+//! pointer works here in Mirror mode only, otherwise only keys do.
+//!
+//! Stall-proofing (owner report t316u): the task runs on the shared portal runtime
+//! (`portal_rt`), never on the network runtime, and the app hands input over with `try_send`
+//! only. A permission dialog nobody answers, a refusal or a hung portal call therefore
+//! leaves this task waiting while its channel fills and drops input; the control reader and
+//! the capture never wait for it. Calls on an open session and closing one are bounded by
+//! [`INPUT_TIMEOUT`]; only the user-paced permission dialog itself is not.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use ashpd::desktop::remote_desktop::{DeviceType, KeyState, RemoteDesktop, SelectDevicesOptions};
+use ashpd::desktop::screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType};
 use ashpd::desktop::{PersistMode, Session};
 use mirrorwire_proto::control::{pointer_to_stream, PointerPhase, RemoteInput, RemoteKey};
 use std::path::{Path, PathBuf};
@@ -33,73 +38,111 @@ pub const INPUT_TIMEOUT: Duration = Duration::from_secs(2);
 /// presenter window, AGENTS.md §1.8).
 pub type RemoteStatusSink = Arc<dyn Fn(String) + Send + Sync>;
 
-/// Shown when pen/touch reaches the key-only fallback injector.
-pub const POINTER_NEEDS_SHARED_SESSION: &str = "pen/touch is not available: capture and input \
-     could not share one portal session. Stop and start sharing and allow keyboard and pointer \
-     control in the dialog (pen pressure through the virtual pen works without it)";
+/// Whether the pen/finger can be mapped onto the picture right now. This separate injector
+/// (the fallback when capture and input cannot share one session, see `portal.rs`) offers a
+/// monitor stream of its own, so it maps only in Mirror mode; Extend's virtual monitor is a
+/// different stream there and the pointer is refused with a message.
+pub type PointerMapped = Arc<dyn Fn() -> bool + Send + Sync>;
 
-/// What the key-only injector does with one input.
-#[derive(Debug, PartialEq, Eq)]
-enum Action {
-    /// Tap the key (opening the key session first if needed).
-    Key(RemoteKey),
-    /// Nothing to do here.
-    Ignore,
-    /// Refuse the pointer; `true` = show the note (once per run of pointer input).
-    RefusePointer(bool),
+/// Mirror maps onto the separate injector's monitor stream; Extend does not.
+pub fn separate_session_maps_pointer(mode: super::CaptureMode) -> bool {
+    mode == super::CaptureMode::Mirror
 }
 
-/// The fallback injector's policy, apart from the portal so it is testable: keys go through,
-/// pointer input never opens a session.
+/// Told `true` while the desktop's permission dialog for pen/touch (pointer) input is open
+/// and `false` once it is answered, so the presenter window can explain it.
+pub type AskingSink = Arc<dyn Fn(bool) + Send + Sync>;
+
+/// What the injector does with one input (decided apart from the portal, so it is testable).
+#[derive(Debug, PartialEq, Eq)]
+enum Action {
+    /// A mode change is the app's business; it must never open a session here.
+    Ignore,
+    /// Pen/touch cannot be mapped now; `true` = show the note (once per run of pointer input).
+    RefusePointer(bool),
+    /// Send it, opening (or upgrading) the session first if needed.
+    Send,
+}
+
 #[derive(Default)]
-struct KeyOnly {
+struct Policy {
+    /// Last pointer refusal shown, so a hovering pen does not rewrite the line 120x/s.
     pointer_refused: bool,
 }
 
-impl KeyOnly {
-    fn action(&mut self, input: RemoteInput) -> Action {
+impl Policy {
+    fn action(&mut self, input: &RemoteInput, pointer_mapped: bool) -> Action {
         match input {
-            RemoteInput::Key(key) => {
-                self.pointer_refused = false;
-                Action::Key(key)
-            }
-            // A mode change is the app's business; it must never open a session here.
             RemoteInput::PenMode(_) => Action::Ignore,
-            RemoteInput::Pointer { .. } => {
+            RemoteInput::Pointer { .. } if !pointer_mapped => {
                 Action::RefusePointer(!std::mem::replace(&mut self.pointer_refused, true))
+            }
+            _ => {
+                self.pointer_refused = false;
+                Action::Send
             }
         }
     }
 }
 
-/// Start the key-only injector task on the shared portal runtime (`portal_rt`). Send taps
-/// into the returned sender; pen/touch sent here is refused with a note.
+/// Start the injector task on the shared portal runtime (`portal_rt`). Send taps into the
+/// returned sender (with `try_send`: a task waiting on a permission dialog does not drain it).
 pub fn spawn_remote_injector(
     restore_token_path: PathBuf,
     status: RemoteStatusSink,
+    asking: AskingSink,
+    pointer_mapped: PointerMapped,
 ) -> std::io::Result<mpsc::Sender<RemoteInput>> {
     let rt = crate::source::portal_rt::portal_runtime()?;
     let (tx, mut rx) = mpsc::channel::<RemoteInput>(64);
     status("presenter remote: waiting for the first button press".into());
     rt.spawn(async move {
         let mut session: Option<Remote> = None;
-        let mut policy = KeyOnly::default();
+        let mut policy = Policy::default();
         while let Some(input) = rx.recv().await {
-            let key = match policy.action(input) {
-                Action::Key(key) => key,
+            match policy.action(&input, pointer_mapped()) {
                 Action::Ignore => continue,
                 Action::RefusePointer(note) => {
                     if note {
-                        status(POINTER_NEEDS_SHARED_SESSION.into());
+                        status(
+                            "pen/touch input works in Mirror mode only (the capture session could not be shared with input)".into(),
+                        );
                     }
                     continue;
                 }
-            };
+                Action::Send => {}
+            }
+            let wants_pointer = matches!(input, RemoteInput::Pointer { .. });
+            if session
+                .as_ref()
+                .is_some_and(|s| wants_pointer && s.stream.is_none())
+            {
+                // Upgrade a key-only session.
+                if let Some(old) = session.take() {
+                    let _ = tokio::time::timeout(INPUT_TIMEOUT, old.session.close()).await;
+                }
+            }
             if session.is_none() {
-                status("presenter remote: asking the desktop for keyboard permission…".into());
-                match open_session(&restore_token_path).await {
+                // Moves while no session exists must not each open a dialog.
+                if matches!(input, RemoteInput::Pointer { phase, .. } if phase != PointerPhase::Down)
+                {
+                    continue;
+                }
+                status(if wants_pointer {
+                    "presenter remote: asking the desktop for pointer permission (choose the screen to control)…".into()
+                } else {
+                    "presenter remote: asking the desktop for permission…".into()
+                });
+                asking(wants_pointer);
+                let opened = open_session(&restore_token_path, wants_pointer).await;
+                asking(false);
+                match opened {
                     Ok(s) => {
-                        status("presenter remote: ready (taps Right/Left/Space/Esc)".into());
+                        status(if s.stream.is_some() {
+                            "presenter remote: ready (keys and pen/touch pointer)".into()
+                        } else {
+                            "presenter remote: ready (taps Right/Left/Space/Esc)".into()
+                        });
                         session = Some(s);
                     }
                     Err(e) => {
@@ -116,14 +159,14 @@ pub fn spawn_remote_injector(
             };
             let sent = tokio::time::timeout(
                 INPUT_TIMEOUT,
-                inject(&remote.proxy, &remote.session, None, RemoteInput::Key(key)),
+                inject(&remote.proxy, &remote.session, remote.stream, input),
             )
             .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("the portal did not answer")));
+            .unwrap_or_else(|_| Err(anyhow!("the portal did not answer")));
             if let Err(e) = sent {
                 tracing::warn!("presenter remote input failed: {e:#}");
                 status(format!(
-                    "presenter remote: input failed ({e:#}); reconnecting on the next tap"
+                    "presenter remote: input failed ({e:#}); reconnecting"
                 ));
                 if let Some(old) = session.take() {
                     let _ = tokio::time::timeout(INPUT_TIMEOUT, old.session.close()).await;
@@ -134,13 +177,15 @@ pub fn spawn_remote_injector(
     Ok(tx)
 }
 
-/// An open key-only RemoteDesktop session.
+/// An open RemoteDesktop session. `stream` is the (node id, size) pointer motion is addressed
+/// to; `None` for a key-only session.
 struct Remote {
     proxy: RemoteDesktop,
     session: Session<RemoteDesktop>,
+    stream: Option<(u32, (i32, i32))>,
 }
 
-async fn open_session(token_path: &Path) -> Result<Remote> {
+async fn open_session(token_path: &Path, pointer: bool) -> Result<Remote> {
     let proxy = RemoteDesktop::new()
         .await
         .context("the desktop has no RemoteDesktop portal")?;
@@ -148,9 +193,16 @@ async fn open_session(token_path: &Path) -> Result<Remote> {
     if !available.contains(DeviceType::KEYBOARD) {
         bail!("the RemoteDesktop portal offers no keyboard");
     }
+    if pointer && !available.contains(DeviceType::POINTER) {
+        bail!("the RemoteDesktop portal offers no pointer");
+    }
     let session = proxy.create_session(Default::default()).await?;
-    match set_up(&proxy, &session, token_path).await {
-        Ok(()) => Ok(Remote { proxy, session }),
+    match set_up(&proxy, &session, token_path, pointer).await {
+        Ok(stream) => Ok(Remote {
+            proxy,
+            session,
+            stream,
+        }),
         Err(e) => {
             // Never leave a half-set-up session behind on the desktop.
             let _ = tokio::time::timeout(INPUT_TIMEOUT, session.close()).await;
@@ -159,27 +211,51 @@ async fn open_session(token_path: &Path) -> Result<Remote> {
     }
 }
 
-/// SelectDevices (keyboard), Start, and keep the restore token.
+/// SelectDevices (+ SelectSources for the pointer), Start, and keep the restore token.
 async fn set_up(
     proxy: &RemoteDesktop,
     session: &Session<RemoteDesktop>,
     token_path: &Path,
-) -> Result<()> {
+    pointer: bool,
+) -> Result<Option<(u32, (i32, i32))>> {
     let token = tokio::fs::read_to_string(token_path)
         .await
         .ok()
         .map(|t| t.trim().to_owned())
         .filter(|t| !t.is_empty());
+    let devices = if pointer {
+        DeviceType::KEYBOARD | DeviceType::POINTER
+    } else {
+        DeviceType::KEYBOARD
+    };
     proxy
         .select_devices(
             session,
             SelectDevicesOptions::default()
-                .set_devices(DeviceType::KEYBOARD)
+                .set_devices(devices)
                 .set_persist_mode(PersistMode::ExplicitlyRevoked)
                 .set_restore_token(token.as_deref()),
         )
         .await?
         .response()?;
+    if pointer {
+        // Absolute motion is addressed to a screen-cast stream of this same session.
+        let cast = Screencast::new()
+            .await
+            .context("connecting to ScreenCast portal")?;
+        // No persist_mode / restore_token here: on a RemoteDesktop session persistence is
+        // SelectDevices' job only (ScreenCast spec; KDE: "Remote desktop sessions cannot
+        // persist").
+        cast.select_sources(
+            session,
+            SelectSourcesOptions::default()
+                .set_cursor_mode(CursorMode::HIDDEN)
+                .set_sources(SourceType::MONITOR)
+                .set_multiple(false),
+        )
+        .await?
+        .response()?;
+    }
     let started = proxy
         .start(session, None, Default::default())
         .await?
@@ -188,13 +264,28 @@ async fn set_up(
     if !started.devices().contains(DeviceType::KEYBOARD) {
         bail!("keyboard access was not granted");
     }
+    let stream = if pointer {
+        if !started.devices().contains(DeviceType::POINTER) {
+            bail!("pointer access was not granted");
+        }
+        let st = started
+            .streams()
+            .first()
+            .ok_or_else(|| anyhow!("the portal returned no screen to point at"))?;
+        let size = st
+            .size()
+            .ok_or_else(|| anyhow!("the portal did not tell the screen size"))?;
+        Some((st.pipe_wire_node_id(), size))
+    } else {
+        None
+    };
     if let Some(t) = started.restore_token() {
         if let Some(dir) = token_path.parent() {
             tokio::fs::create_dir_all(dir).await?;
         }
         tokio::fs::write(token_path, t).await?;
     }
-    Ok(())
+    Ok(stream)
 }
 
 /// Send one input through an open RemoteDesktop session. `stream` is the (node id, size) of
@@ -254,6 +345,7 @@ async fn tap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::CaptureMode;
 
     fn ptr(phase: PointerPhase) -> RemoteInput {
         RemoteInput::Pointer {
@@ -264,35 +356,47 @@ mod tests {
         }
     }
 
-    /// Owner report t316u: the fallback injector must never start a second screen-cast
-    /// session (a new portal dialog and a competing capture) for pen/touch while the capture
-    /// runs. Pointer input is refused with one note; keys still work.
     #[test]
-    fn the_fallback_injector_never_opens_a_session_for_the_pointer() {
-        let mut p = KeyOnly::default();
+    fn separate_session_maps_mirror_only() {
+        assert!(separate_session_maps_pointer(CaptureMode::Mirror));
+        assert!(!separate_session_maps_pointer(CaptureMode::Extend));
+    }
+
+    /// Extend (pointer not mappable): keys still go through, the pointer is refused with one
+    /// note, and nothing here ever opens a session for it. A mode change is ignored.
+    #[test]
+    fn unmappable_pointer_is_refused_with_one_note_and_keys_still_work() {
+        let mut p = Policy::default();
         assert_eq!(
-            p.action(ptr(PointerPhase::Down)),
+            p.action(&ptr(PointerPhase::Down), false),
             Action::RefusePointer(true)
         );
         assert_eq!(
-            p.action(ptr(PointerPhase::Move)),
+            p.action(&ptr(PointerPhase::Move), false),
             Action::RefusePointer(false)
         );
         assert_eq!(
-            p.action(ptr(PointerPhase::Up)),
+            p.action(&ptr(PointerPhase::Up), false),
             Action::RefusePointer(false)
         );
+        assert_eq!(p.action(&RemoteInput::PenMode(true), false), Action::Ignore);
         assert_eq!(
-            p.action(ptr(PointerPhase::Down)),
-            Action::RefusePointer(false)
+            p.action(&RemoteInput::Key(RemoteKey::Next), false),
+            Action::Send
         );
-        let key = RemoteInput::Key(RemoteKey::Next);
-        assert_eq!(p.action(key), Action::Key(RemoteKey::Next));
-        // After a key, the next pen stroke shows the note again (the line was replaced).
+        // After a key, the next refusal shows the note again (the line was replaced).
         assert_eq!(
-            p.action(ptr(PointerPhase::Down)),
+            p.action(&ptr(PointerPhase::Down), false),
             Action::RefusePointer(true)
         );
+    }
+
+    /// Mirror: the pointer is sent (opening the pointer session on a press).
+    #[test]
+    fn mappable_pointer_is_sent() {
+        let mut p = Policy::default();
+        assert_eq!(p.action(&ptr(PointerPhase::Down), true), Action::Send);
+        assert_eq!(p.action(&ptr(PointerPhase::Up), true), Action::Send);
     }
 
     /// Extend: the pointer lands on the virtual monitor's own size, whatever size the
