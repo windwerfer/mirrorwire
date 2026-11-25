@@ -5,18 +5,34 @@
 //! that nobody uses as a remote never shows the dialog. A key-only session is upgraded (closed
 //! and reopened, one more dialog) when the first pointer event arrives: absolute pointer motion
 //! is addressed to a screen-cast stream, so the pointer session also selects a monitor source.
+//!
+//! This is the fallback when capture and input cannot share one session (`portal.rs`); the
+//! pointer works here in Mirror mode only, otherwise only keys do.
+//!
+//! Stall-proofing (owner report t316u): the task runs on the shared portal runtime
+//! (`portal_rt`), never on the network runtime, and the app hands input over with `try_send`
+//! only. A permission dialog nobody answers, a refusal or a hung portal call therefore
+//! leaves this task waiting while its channel fills and drops input; the control reader and
+//! the capture never wait for it. Calls on an open session and closing one are bounded by
+//! [`INPUT_TIMEOUT`]; only the user-paced permission dialog itself is not.
 
 use anyhow::{anyhow, bail, Context, Result};
 use ashpd::desktop::remote_desktop::{DeviceType, KeyState, RemoteDesktop, SelectDevicesOptions};
 use ashpd::desktop::screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType};
 use ashpd::desktop::{PersistMode, Session};
 use mirrorwire_proto::control::{pointer_to_stream, PointerPhase, RemoteInput, RemoteKey};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Linux evdev code of the left mouse button (what the portal's button call takes).
 const BTN_LEFT: i32 = 0x110;
+
+/// Longest one input may take in the portal before it is given up. The calls are plain D-Bus
+/// method calls that answer at once; one that does not is a stuck portal, and the input path
+/// must move on (a later input retries).
+pub const INPUT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Receives one human-readable line whenever the remote's state changes (shown in the
 /// presenter window, AGENTS.md §1.8).
@@ -37,42 +53,73 @@ pub fn separate_session_maps_pointer(mode: super::CaptureMode) -> bool {
 /// and `false` once it is answered, so the presenter window can explain it.
 pub type AskingSink = Arc<dyn Fn(bool) + Send + Sync>;
 
-/// Start the injector task on the current tokio runtime. Send taps into the returned sender.
+/// What the injector does with one input (decided apart from the portal, so it is testable).
+#[derive(Debug, PartialEq, Eq)]
+enum Action {
+    /// A mode change is the app's business; it must never open a session here.
+    Ignore,
+    /// Pen/touch cannot be mapped now; `true` = show the note (once per run of pointer input).
+    RefusePointer(bool),
+    /// Send it, opening (or upgrading) the session first if needed.
+    Send,
+}
+
+#[derive(Default)]
+struct Policy {
+    /// Last pointer refusal shown, so a hovering pen does not rewrite the line 120x/s.
+    pointer_refused: bool,
+}
+
+impl Policy {
+    fn action(&mut self, input: &RemoteInput, pointer_mapped: bool) -> Action {
+        match input {
+            RemoteInput::PenMode(_) => Action::Ignore,
+            RemoteInput::Pointer { .. } if !pointer_mapped => {
+                Action::RefusePointer(!std::mem::replace(&mut self.pointer_refused, true))
+            }
+            _ => {
+                self.pointer_refused = false;
+                Action::Send
+            }
+        }
+    }
+}
+
+/// Start the injector task on the shared portal runtime (`portal_rt`). Send taps into the
+/// returned sender (with `try_send`: a task waiting on a permission dialog does not drain it).
 pub fn spawn_remote_injector(
     restore_token_path: PathBuf,
     status: RemoteStatusSink,
     asking: AskingSink,
     pointer_mapped: PointerMapped,
-) -> mpsc::Sender<RemoteInput> {
+) -> std::io::Result<mpsc::Sender<RemoteInput>> {
+    let rt = crate::source::portal_rt::portal_runtime()?;
     let (tx, mut rx) = mpsc::channel::<RemoteInput>(64);
     status("presenter remote: waiting for the first button press".into());
-    tokio::spawn(async move {
+    rt.spawn(async move {
         let mut session: Option<Remote> = None;
-        // Last pointer failure shown, so a hovering pen does not rewrite the line 120x/s.
-        let mut pointer_refused = false;
+        let mut policy = Policy::default();
         while let Some(input) = rx.recv().await {
-            if matches!(input, RemoteInput::PenMode(_)) {
-                // A mode change is the app's business; it must never open a session here.
-                continue;
+            match policy.action(&input, pointer_mapped()) {
+                Action::Ignore => continue,
+                Action::RefusePointer(note) => {
+                    if note {
+                        status(
+                            "pen/touch input works in Mirror mode only (the capture session could not be shared with input)".into(),
+                        );
+                    }
+                    continue;
+                }
+                Action::Send => {}
             }
             let wants_pointer = matches!(input, RemoteInput::Pointer { .. });
-            if wants_pointer && !pointer_mapped() {
-                if !pointer_refused {
-                    status(
-                        "pen/touch input works in Mirror mode only (the capture session could not be shared with input)".into(),
-                    );
-                    pointer_refused = true;
-                }
-                continue;
-            }
-            pointer_refused = false;
             if session
                 .as_ref()
                 .is_some_and(|s| wants_pointer && s.stream.is_none())
             {
                 // Upgrade a key-only session.
                 if let Some(old) = session.take() {
-                    let _ = old.session.close().await;
+                    let _ = tokio::time::timeout(INPUT_TIMEOUT, old.session.close()).await;
                 }
             }
             if session.is_none() {
@@ -110,16 +157,24 @@ pub fn spawn_remote_injector(
             let Some(remote) = &session else {
                 continue;
             };
-            if let Err(e) = inject(&remote.proxy, &remote.session, remote.stream, input).await {
+            let sent = tokio::time::timeout(
+                INPUT_TIMEOUT,
+                inject(&remote.proxy, &remote.session, remote.stream, input),
+            )
+            .await
+            .unwrap_or_else(|_| Err(anyhow!("the portal did not answer")));
+            if let Err(e) = sent {
                 tracing::warn!("presenter remote input failed: {e:#}");
                 status(format!(
                     "presenter remote: input failed ({e:#}); reconnecting"
                 ));
-                session = None;
+                if let Some(old) = session.take() {
+                    let _ = tokio::time::timeout(INPUT_TIMEOUT, old.session.close()).await;
+                }
             }
         }
     });
-    tx
+    Ok(tx)
 }
 
 /// An open RemoteDesktop session. `stream` is the (node id, size) pointer motion is addressed
@@ -130,7 +185,7 @@ struct Remote {
     stream: Option<(u32, (i32, i32))>,
 }
 
-async fn open_session(token_path: &PathBuf, pointer: bool) -> Result<Remote> {
+async fn open_session(token_path: &Path, pointer: bool) -> Result<Remote> {
     let proxy = RemoteDesktop::new()
         .await
         .context("the desktop has no RemoteDesktop portal")?;
@@ -150,7 +205,7 @@ async fn open_session(token_path: &PathBuf, pointer: bool) -> Result<Remote> {
         }),
         Err(e) => {
             // Never leave a half-set-up session behind on the desktop.
-            let _ = session.close().await;
+            let _ = tokio::time::timeout(INPUT_TIMEOUT, session.close()).await;
             Err(e)
         }
     }
@@ -160,7 +215,7 @@ async fn open_session(token_path: &PathBuf, pointer: bool) -> Result<Remote> {
 async fn set_up(
     proxy: &RemoteDesktop,
     session: &Session<RemoteDesktop>,
-    token_path: &PathBuf,
+    token_path: &Path,
     pointer: bool,
 ) -> Result<Option<(u32, (i32, i32))>> {
     let token = tokio::fs::read_to_string(token_path)
@@ -292,10 +347,56 @@ mod tests {
     use super::*;
     use crate::source::CaptureMode;
 
+    fn ptr(phase: PointerPhase) -> RemoteInput {
+        RemoteInput::Pointer {
+            phase,
+            x: 1,
+            y: 2,
+            pressure: None,
+        }
+    }
+
     #[test]
     fn separate_session_maps_mirror_only() {
         assert!(separate_session_maps_pointer(CaptureMode::Mirror));
         assert!(!separate_session_maps_pointer(CaptureMode::Extend));
+    }
+
+    /// Extend (pointer not mappable): keys still go through, the pointer is refused with one
+    /// note, and nothing here ever opens a session for it. A mode change is ignored.
+    #[test]
+    fn unmappable_pointer_is_refused_with_one_note_and_keys_still_work() {
+        let mut p = Policy::default();
+        assert_eq!(
+            p.action(&ptr(PointerPhase::Down), false),
+            Action::RefusePointer(true)
+        );
+        assert_eq!(
+            p.action(&ptr(PointerPhase::Move), false),
+            Action::RefusePointer(false)
+        );
+        assert_eq!(
+            p.action(&ptr(PointerPhase::Up), false),
+            Action::RefusePointer(false)
+        );
+        assert_eq!(p.action(&RemoteInput::PenMode(true), false), Action::Ignore);
+        assert_eq!(
+            p.action(&RemoteInput::Key(RemoteKey::Next), false),
+            Action::Send
+        );
+        // After a key, the next refusal shows the note again (the line was replaced).
+        assert_eq!(
+            p.action(&ptr(PointerPhase::Down), false),
+            Action::RefusePointer(true)
+        );
+    }
+
+    /// Mirror: the pointer is sent (opening the pointer session on a press).
+    #[test]
+    fn mappable_pointer_is_sent() {
+        let mut p = Policy::default();
+        assert_eq!(p.action(&ptr(PointerPhase::Down), true), Action::Send);
+        assert_eq!(p.action(&ptr(PointerPhase::Up), true), Action::Send);
     }
 
     /// Extend: the pointer lands on the virtual monitor's own size, whatever size the

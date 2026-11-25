@@ -3,8 +3,9 @@
 ## 0.2.2
 
 ### Breaking
-- Protocol version 12: new `pen_mode` and `video_paused` control messages. Update the
-  presenter, the desktop viewer and the Android viewer together.
+- Protocol version 12: new `pen_mode` and `video_paused` control messages. **Update the
+  presenter, the desktop viewer and the Android viewer together**; a peer of another version is
+  rejected with an "update both devices" message.
 
 ### Added
 - Start screen › Advanced: **Use the FilmCraft encoder**, remembered in `settings.json`
@@ -14,7 +15,7 @@
 - Start screen: a **✏** next to the Presenter button shows whether the desktop's pen/keys
   permission is remembered (green); click it for an explanation and **Forget the pen and
   keys permission**.
-- Viewer ☰ menu (desktop and Android): **Wacom pen (no video)** and **PowerPoint remote
+- Viewer menu (☰, desktop and Android): **Wacom pen (no video)** and **PowerPoint remote
   only (no video)**. The presenter then skips encoding and sending until the viewer shows the
   picture again (resumes with a keyframe).
 - Presenter window: a dialog explains the desktop's pointer-permission prompt while the
@@ -24,6 +25,8 @@
   fixed zip order; `MIRRORWIRE_UNSIGNED=1 packaging/android/build-apk.sh` writes the unsigned
   aligned APK. Two clones at different paths give the same bytes and `apksigcopier compare`
   accepts the signed APK. CI checks this on every build.
+- `build-apk.sh` dev profile: `MIRRORWIRE_PROFILE=dev` builds an unoptimised APK that installs
+  next to the release app as `io.github.windwerfer.mirrorwire.dev`.
 - F-Droid / IzzyOnDroid preparation: `fastlane/metadata/android/en-US/` and a draft
   `packaging/fdroid/io.github.windwerfer.mirrorwire.yml` with `packaging/fdroid/README.md`
   (not submitted).
@@ -37,13 +40,41 @@
   2000000000. The APK is signed with v2 + v3 only (no v1 JAR signature; minSdk is 26).
 - `scripts/run-stats.py` and `scripts/sim-compare.py` only read files inside the current
   directory, the repository, the temp directory or `MIRRORWIRE_SCRIPT_BASE` (Sonar S8707).
+- The separate fallback session for pen/touch (Mirror mode only) and keys now runs on the
+  shared portal runtime, and nothing waits for its permission dialog: while it is open or
+  unanswered, pen strokes are dropped and the video keeps going.
+- Viewers (Android and desktop): the top-right corner of the video always shows three icons,
+  menu (☰), Pen and Disconnect, replacing Android's Disconnect and Pen text buttons and the
+  desktop's Pen button in the remote row. The menu holds Pen, PowerPoint mode (the
+  presenter-remote row), Hide (stats and that row; the icons stay) and Show statistics; the
+  desktop menu also has 1:1 pixel-exact display and Fullscreen. Keys `S`, `R`, `1`, `F`,
+  `Esc` are unchanged (Esc closes an open menu first).
+- Show statistics is saved in `settings.json` (`show_stats`, on by default; missing or
+  unreadable means on).
+- Android: picture warnings (GPU error, stall, stale picture) stay visible when the stats are
+  off or the overlay is hidden.
+  The menu also holds the two no-video modes (Wacom pen, PowerPoint remote only). Not tested
+  on hardware yet.
 
 ### Fixed
+- The combined capture + input session no longer asks for persistence on the cast (KDE
+  refused it with `InvalidArgument`); persistence belongs to the input selection only.
 - Pen/touch and remote keys never worked on KDE: the presenter passed `persist_mode` and a
   restore token to ScreenCast `SelectSources` on RemoteDesktop sessions, which the spec does
   not allow; KDE answered "Remote desktop sessions cannot persist" for the combined session
   and for every pen attempt. Persistence now goes through `SelectDevices` only, and a session
   that fails half-way is closed instead of left open.
+- After the capture was reopened (Mirror/Extend, cursor or frame-rate change, also by a
+  pen tap on the presenter window in Mirror mode) the Linux presenter could hang with no video
+  until restarted, with no dialog. All portal calls now share one long-lived runtime, so the
+  portal's D-Bus connection no longer dies with the first capture. Same fix for the Flatpak and
+  native builds.
+- Pressing **Pen** on the viewer could stop the Linux presenter's video until it was
+  restarted (the process kept running). The presenter's control reader waited for the input
+  path to take each pen press and release; while it waited, the viewer looked silent and the
+  video paused. Input is now handed over without waiting (a full queue drops moves and presses,
+  a release is retried), the input router runs on its own thread, and every portal input call
+  has a 2 s limit. No protocol change.
 
 ## 0.2.1
 

@@ -606,7 +606,12 @@ screen**, not logs. So:
 
 - Every state and error must be readable in the window: presenter status panel (phase,
   listen address, encoder, source, fingerprint, pairing code, connected viewer) and viewer
-  connection status and stats overlay (`S`).
+  connection status and stats overlay (`S`, or Show statistics in the ☰ menu; saved, on
+  by default).
+- Viewer menu (branch `viewer-menu`), not run on hardware yet: on the tablet and the
+  desktop viewer, the corner shows ☰ / pen / disconnect also after Hide; Show statistics
+  off survives a restart; Hide leaves it unchanged; the tap that closes the menu neither
+  hides the overlay nor draws on the presenter in pen mode.
 - Error messages say what to do ("No answer from 192.168.1.20:47800 (UDP). … On Fedora:
   sudo firewall-cmd --add-port=47800/udp"), not just what failed.
 - Ask for exactly what you need ("press S and photograph the top-left corner").
@@ -616,6 +621,21 @@ screen**, not logs. So:
   draw in Krita from the Android viewer with light and hard strokes, and check that "MirrorWire
   virtual pen" shows in System Settings → Drawing Tablet. Then run the undo commands and check
   again (it must fail, and pen mode must still work as a plain pointer).
+- Pen must never stop the video (owner report t316u, 2026-11-25), not run yet: start sharing,
+  connect the Android viewer, press **Pen** and draw for 30 s, with pen pressure off and then
+  on. The tablet picture must keep moving (an on-screen clock in the shared screen shows it)
+  and the presenter log must not say "viewer silent … video paused". With the
+  combined session refused (Mirror mode), the separate pointer session's dialog may appear
+  (the presenter window explains it); leave it unanswered for a minute: the tablet picture must
+  keep moving and strokes are simply dropped. In Extend the window shows "pen/touch input works
+  in Mirror mode only".
+  Unit guards: `undrained_pen_input_does_not_stop_the_video` (net, e2e),
+  `input_forward_tests` (net), `a_blocking_pen_device_does_not_stall_the_network_runtime`
+  (app), `an_unanswered_pointer_dialog_does_not_back_up_the_route` (app),
+  `unmappable_pointer_is_refused_with_one_note_and_keys_still_work` (media).
+  Then, while the viewer is connected, change Cursor or Mirror/Extend in the presenter window
+  (or tap it from the tablet in pen mode): the capture must come back within a few seconds
+  without a restart (guard: `the_portal_runtime_outlives_the_thread_that_first_used_it`).
 
 ## 5. CI and artifacts
 
