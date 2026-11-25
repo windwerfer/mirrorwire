@@ -1,0 +1,13 @@
+MirrorWire shows another computer's screen on your Android phone or tablet over your own Wi-Fi or Ethernet, with only a few milliseconds of delay. This app is the viewer: it receives the picture from the MirrorWire presenter running on a Linux or macOS computer (same release on both devices).
+
+<b>How it works</b>
+• Find the presenter in the list (mDNS discovery) or scan its QR code, then enter the pairing code once.
+• Video is H.264, decoded by the phone's hardware decoder (with a built-in software decoder as fallback), sent over encrypted QUIC.
+• The presenter's certificate is pinned and the presenter only streams to devices that showed the pairing code once. There is no plaintext mode.
+• Optional: use your pen or finger as the presenter's pointer, or the PowerPoint remote buttons (Previous / Next / Click / Escape). Both are off until you switch them on in the viewer.
+
+<b>Good to know</b>
+• LAN only: no cloud, no account, no relay server, no ads, no tracking, no analytics.
+• This app only views; it does not capture your Android screen.
+• Both devices must run the same MirrorWire release; otherwise the app asks you to update.
+• Free software, MIT OR Apache-2.0. Source and issue tracker: https://github.com/windwerfer/mirrorwire

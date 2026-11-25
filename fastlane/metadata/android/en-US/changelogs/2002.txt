@@ -1,0 +1,1 @@
+Matches the 0.2.2 release: pen permission is asked only when the pen is switched on; new viewer modes "Wacom pen (no video)" and "PowerPoint remote only (no video)" (protocol 12: update presenter and viewers together); presenter-side fixes for pen and keys on KDE; reproducible build.
