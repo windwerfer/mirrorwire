@@ -963,4 +963,32 @@ mod tests {
             EncoderBackend::Filmcraft
         );
     }
+
+    #[test]
+    fn filmcraft_note_says_what_each_build_can_do() {
+        assert!(filmcraft_note(true, true).contains("VAAPI, then x264"));
+        assert!(filmcraft_note(false, true).contains("only encoder"));
+        assert!(filmcraft_note(true, false).contains("`filmcraft`"));
+        assert!(filmcraft_note(false, false).contains("cannot encode"));
+    }
+
+    #[test]
+    fn renderer_labels_and_eframe_choice_match() {
+        assert_eq!(ResolvedRenderer::Glow.label(), "OpenGL (glow)");
+        assert_eq!(ResolvedRenderer::Wgpu.label(), "wgpu");
+        assert!(matches!(
+            ResolvedRenderer::Glow.eframe(),
+            eframe::Renderer::Glow
+        ));
+        assert!(matches!(
+            ResolvedRenderer::Wgpu.eframe(),
+            eframe::Renderer::Wgpu
+        ));
+    }
+
+    #[test]
+    fn the_start_screen_button_names_miracast_only_descriptively() {
+        // D22: "Miracast" is a description of compatibility, never a product claim.
+        assert!(MIRACAST_BUTTON.contains("Miracast-compatible"));
+    }
 }
