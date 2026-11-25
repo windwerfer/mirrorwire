@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The corner icons start this far below the top edge.
+const MARGIN_TOP: f32 = 8.0;
+
 impl MirrorApp {
     pub(super) fn video_ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -119,10 +122,14 @@ impl MirrorApp {
             Some(CursorMode::Hidden) => "cursor hidden".to_owned(),
             None => "cursor ?".to_owned(),
         };
-        if self.show_stats {
+        let menu_id = egui::Id::unique("mirrorwire_overlay_menu");
+        // Read before the popup runs this frame: Esc then only closes the menu, and the click
+        // that dismisses it does not also reach the presenter as a pen press.
+        let menu_was_open = egui::Popup::is_id_open(&ctx, menu_id);
+        if self.overlay.stats_visible() {
             let stream = status.stream.as_ref();
             let text = format!(
-                "{}x{}  source {:.1} fps  {:.2} Mbit/s  {} ({})  {}\n{}  decode {:.2} ms  {}  capture->texture {:.1} ms\nwindow: {}\n{}\n{}\n{}\n{}\nS: stats  R: presenter remote  1: 1:1 pixels  F / double-click: fullscreen  Esc: disconnect",
+                "{}x{}  source {:.1} fps  {:.2} Mbit/s  {} ({})  {}\n{}  decode {:.2} ms  {}  capture->texture {:.1} ms\nwindow: {}\n{}\n{}\n{}\n{}\nmenu (top right)  S: stats  R: PowerPoint mode  1: 1:1 pixels  F / double-click: fullscreen  Esc: disconnect",
                 status.native_width.max(stream.map(|s| s.width).unwrap_or(0)),
                 status.native_height.max(stream.map(|s| s.height).unwrap_or(0)),
                 status.source_fps,
@@ -140,26 +147,24 @@ impl MirrorApp {
                 status.bottleneck,
                 scale_info,
             );
-            ui.painter().text(
-                rect.left_top() + egui::vec2(8.0, 8.0),
-                egui::Align2::LEFT_TOP,
+            let galley = ui.painter().layout(
                 text,
                 egui::FontId::monospace(12.0),
+                egui::Color32::from_rgb(0, 255, 120),
+                (rect.width() - chrome::COLUMN_WIDTH - 16.0).max(80.0),
+            );
+            ui.painter().galley(
+                rect.left_top() + egui::vec2(8.0, 8.0),
+                galley,
                 egui::Color32::from_rgb(0, 255, 120),
             );
         }
 
-        if self.show_remote {
+        if self.overlay.powerpoint_visible() {
             egui::Area::new(egui::Id::unique("remote_buttons"))
                 .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -16.0))
                 .show(&ctx, |ui| {
                     ui.horizontal(|ui| {
-                        let pen = egui::Button::new(egui::RichText::new("Pen").size(22.0))
-                            .min_size(egui::vec2(110.0, 52.0))
-                            .selected(self.pen_mode);
-                        if ui.add(pen).clicked() {
-                            self.pen_mode = !self.pen_mode;
-                        }
                         for key in mirrorwire_proto::control::RemoteKey::ALL {
                             let button =
                                 egui::Button::new(egui::RichText::new(key.label()).size(22.0))
@@ -181,26 +186,88 @@ impl MirrorApp {
             ui.scope_id().with("video"),
             egui::Sense::click_and_drag(),
         );
-        self.send_pen(&ctx, &response, picture_rect, &status);
+        if !menu_was_open || self.pen_down {
+            self.send_pen(&ctx, &response, picture_rect, &status);
+        }
         // Never call Response methods inside `ctx.input(..)`: on a click,
         // `double_clicked()` takes the context lock again, and a nested read
         // lock deadlocks as soon as the decode thread is waiting to write
         // (`request_repaint`). That froze the iMac viewer on a click.
-        let double_clicked = response.double_clicked() && !self.pen_mode;
-        let (toggle_fs, toggle_stats, toggle_1to1, leave, toggle_remote) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::F) || double_clicked,
-                i.key_pressed(egui::Key::S),
-                i.key_pressed(egui::Key::Num1),
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::R),
-            )
-        });
+        let double_clicked = response.double_clicked() && !self.pen_mode && !menu_was_open;
+        let (mut toggle_fs, mut toggle_stats, mut toggle_1to1, esc, mut toggle_remote) =
+            ctx.input(|i| {
+                (
+                    i.key_pressed(egui::Key::F) || double_clicked,
+                    i.key_pressed(egui::Key::S),
+                    i.key_pressed(egui::Key::Num1),
+                    i.key_pressed(egui::Key::Escape),
+                    i.key_pressed(egui::Key::R),
+                )
+            });
+        let mut leave = esc && !menu_was_open;
+
+        // Corner icons: drawn last so they sit above the video's click area, and shown even
+        // when the rest of the overlay is hidden.
+        let corner = chrome::corner(ui, rect, MARGIN_TOP, self.pen_mode);
+        if corner.pen_clicked {
+            self.pen_mode = !self.pen_mode;
+        }
+        leave |= corner.disconnect_clicked;
+        let mut toggle_hide = false;
+        let mut pen_mode = self.pen_mode;
+        let (mut show_stats, mut powerpoint, mut hidden) = (
+            self.overlay.show_stats,
+            self.overlay.powerpoint,
+            self.overlay.hidden,
+        );
+        let (mut pixel_exact, mut fullscreen) = (self.pixel_exact, self.fullscreen);
+        egui::Popup::menu(&corner.menu)
+            .id(menu_id)
+            .align(egui::RectAlign::LEFT_START)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(240.0);
+                ui.style_mut().spacing.interact_size.y = 32.0;
+                ui.checkbox(&mut pen_mode, "Pen");
+                toggle_remote |= ui
+                    .checkbox(&mut powerpoint, "PowerPoint mode (R)")
+                    .changed();
+                toggle_hide |= ui.checkbox(&mut hidden, "Hide").changed();
+                toggle_stats |= ui
+                    .checkbox(&mut show_stats, "Show statistics (S)")
+                    .changed();
+                if let Some(note) = &self.overlay_note {
+                    ui.colored_label(egui::Color32::LIGHT_RED, note);
+                }
+                ui.separator();
+                toggle_1to1 |= ui
+                    .checkbox(&mut pixel_exact, "1:1 pixel-exact display (1)")
+                    .changed();
+                toggle_fs |= ui
+                    .checkbox(&mut fullscreen, "Fullscreen (F / double-click)")
+                    .changed();
+            });
+        self.pen_mode = pen_mode;
+        if toggle_hide {
+            self.overlay.hidden = !self.overlay.hidden;
+        }
         if toggle_remote {
-            self.show_remote = !self.show_remote;
+            self.overlay.powerpoint = !self.overlay.powerpoint;
+            // Turning a part on (key or menu) while hidden shows the overlay again.
+            self.overlay.hidden &= !self.overlay.powerpoint;
         }
         if toggle_stats {
-            self.show_stats = !self.show_stats;
+            self.overlay.show_stats = !self.overlay.show_stats;
+            self.overlay.hidden &= !self.overlay.show_stats;
+            self.overlay_note = mirrorwire_net::settings::save_show_stats(
+                &self.config_dir,
+                self.overlay.show_stats,
+            )
+            .err()
+            .map(|e| {
+                tracing::warn!("saving Show statistics: {e:#}");
+                format!("Could not save this choice: {e:#}")
+            });
         }
         if toggle_1to1 {
             self.pixel_exact = !self.pixel_exact;

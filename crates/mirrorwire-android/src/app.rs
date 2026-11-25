@@ -2,6 +2,7 @@
 //! keypad, `mirrorwire://` links (typed, or opened from the camera app's QR
 //! scan via the Java shell), and the full-screen video view.
 
+use crate::chrome;
 use crate::session::{self, Handle};
 use eframe::egui;
 use mirrorwire_net::discovery::Browser;
@@ -12,6 +13,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::platform::android::activity::AndroidApp;
+
+/// The corner icons and the stats start this far below the top (clear of the status bar).
+const CORNER_TOP: f32 = 40.0;
 
 /// Written by the Java shell when a `mirrorwire://` link opens the app.
 const PENDING_URI_FILE: &str = "pending_uri.txt";
@@ -57,7 +61,11 @@ struct ViewerApp {
     target_name: String,
     texture: Option<egui::TextureHandle>,
     picture_size: (u32, u32),
-    show_overlay: bool,
+    /// Hide (menu or a tap on the video), Show statistics (saved in `settings.json`) and
+    /// PowerPoint mode (the presenter-remote row, on by default here).
+    overlay: chrome::Overlay,
+    /// Why the Show statistics choice could not be saved (shown in the menu).
+    overlay_note: Option<String>,
     /// Pen/finger drives the presenter's pointer (off by default: a tap then toggles the
     /// overlay instead of clicking on the presenter).
     pen_mode: bool,
@@ -106,6 +114,7 @@ impl ViewerApp {
                 None
             }
         };
+        let show_stats = mirrorwire_net::settings::show_stats_saved(&data_dir);
         let (browser, browse_error) = {
             let _guard = runtime.enter();
             match Browser::start() {
@@ -129,7 +138,12 @@ impl ViewerApp {
             target_name: String::new(),
             texture: None,
             picture_size: (0, 0),
-            show_overlay: true,
+            overlay: chrome::Overlay {
+                hidden: false,
+                show_stats,
+                powerpoint: true,
+            },
+            overlay_note: None,
             pen_mode: false,
             pen_down: false,
             pen_pressure: None,
@@ -409,19 +423,27 @@ impl ViewerApp {
                 egui::Color32::GRAY,
             );
         }
+        let menu_id = egui::Id::unique("mirrorwire_overlay_menu");
+        // Read before the popup runs this frame: the tap that dismisses the menu must not also
+        // hide the overlay or press the pen on the presenter.
+        let menu_was_open = egui::Popup::is_id_open(ui.ctx(), menu_id);
         let response = ui.interact(
             rect,
             ui.scope_id().with("video"),
             egui::Sense::click_and_drag(),
         );
-        if response.clicked() && !self.pen_mode {
-            self.show_overlay = !self.show_overlay;
+        if response.clicked() && !self.pen_mode && !menu_was_open {
+            self.overlay.hidden = !self.overlay.hidden;
         }
-        self.send_pen(ui.ctx(), &response, picture_rect, status);
-        if self.show_overlay {
+        if !menu_was_open || self.pen_down {
+            self.send_pen(ui.ctx(), &response, picture_rect, status);
+        }
+        let hud_pos = rect.left_top() + egui::vec2(8.0, CORNER_TOP);
+        let mut warning_pos = hud_pos;
+        if self.overlay.stats_visible() {
             let stream = status.stream.as_ref();
             let text = format!(
-                "{}x{}  {:.1} fps  {:.2} Mbit/s  presenter encodes with {}\n{}\ndecode {:.1} ms  to RGBA {:.1} ms  lost {}\npicture age {:.0} ms  reader behind {:.0} ms  out of order {}\n{}\n{}\ncursor {}\n{}\ntap: hide / show remote buttons",
+                "{}x{}  {:.1} fps  {:.2} Mbit/s  presenter encodes with {}\n{}\ndecode {:.1} ms  to RGBA {:.1} ms  lost {}\npicture age {:.0} ms  reader behind {:.0} ms  out of order {}\n{}\n{}\ncursor {}\n{}\ntap: hide / show  ·  menu: top right",
                 stream.map(|s| s.width).unwrap_or(0),
                 stream.map(|s| s.height).unwrap_or(0),
                 status.fps,
@@ -446,51 +468,36 @@ impl ViewerApp {
                 text,
                 egui::FontId::monospace(12.0),
                 egui::Color32::from_rgb(0, 255, 120),
-                rect.width() - 170.0,
+                (rect.width() - chrome::COLUMN_WIDTH - 16.0).max(80.0),
             );
-            let pos = rect.left_top() + egui::vec2(8.0, 40.0);
+            warning_pos = hud_pos + egui::vec2(0.0, galley.size().y + 8.0);
             ui.painter()
-                .galley(pos, galley.clone(), egui::Color32::from_rgb(0, 255, 120));
-            let gpu_error = self
-                .gpu
-                .as_ref()
-                .and_then(|r| r.lock().unwrap_or_else(|e| e.into_inner()).error.clone());
-            if let Some(warning) = gpu_error
-                .or_else(|| status.pipeline.stall())
-                .or_else(|| stale_picture_warning(status))
-            {
-                let warn = ui.painter().layout(
-                    warning,
-                    egui::FontId::proportional(15.0),
-                    egui::Color32::from_rgb(255, 90, 90),
-                    rect.width() - 16.0,
-                );
-                let at = pos + egui::vec2(0.0, galley.size().y + 8.0);
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_size(at, warn.size()).expand(4.0),
-                    4.0,
-                    egui::Color32::from_black_alpha(200),
-                );
-                ui.painter()
-                    .galley(at, warn, egui::Color32::from_rgb(255, 90, 90));
-            }
-            let button = egui::Rect::from_min_size(
-                rect.right_top() + egui::vec2(-150.0, 40.0),
-                egui::vec2(140.0, 44.0),
+                .galley(hud_pos, galley, egui::Color32::from_rgb(0, 255, 120));
+        }
+        // Failures stay visible with the stats off or the overlay hidden (AGENTS.md §1.8).
+        let gpu_error = self
+            .gpu
+            .as_ref()
+            .and_then(|r| r.lock().unwrap_or_else(|e| e.into_inner()).error.clone());
+        if let Some(warning) = gpu_error
+            .or_else(|| status.pipeline.stall())
+            .or_else(|| stale_picture_warning(status))
+        {
+            let warn = ui.painter().layout(
+                warning,
+                egui::FontId::proportional(15.0),
+                egui::Color32::from_rgb(255, 90, 90),
+                (rect.width() - chrome::COLUMN_WIDTH - 16.0).max(80.0),
             );
-            if ui.put(button, egui::Button::new("Disconnect")).clicked() {
-                self.disconnect();
-            }
-            let pen = egui::Rect::from_min_size(
-                rect.right_top() + egui::vec2(-150.0, 94.0),
-                egui::vec2(140.0, 44.0),
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(warning_pos, warn.size()).expand(4.0),
+                4.0,
+                egui::Color32::from_black_alpha(200),
             );
-            if ui
-                .put(pen, egui::Button::new("Pen").selected(self.pen_mode))
-                .clicked()
-            {
-                self.pen_mode = !self.pen_mode;
-            }
+            ui.painter()
+                .galley(warning_pos, warn, egui::Color32::from_rgb(255, 90, 90));
+        }
+        if self.overlay.powerpoint_visible() {
             // Presenter remote: one tap = one key on the presenter (protocol 9).
             let keys = mirrorwire_proto::control::RemoteKey::ALL;
             let (bw, bh, gap) = (150.0, 64.0, 8.0);
@@ -508,6 +515,47 @@ impl ViewerApp {
                     }
                 }
             }
+        }
+        // Corner icons: always shown, also when the rest of the overlay is hidden.
+        let corner = chrome::corner(ui, rect, CORNER_TOP, self.pen_mode);
+        if corner.pen_clicked {
+            self.pen_mode = !self.pen_mode;
+        }
+        let mut pen_mode = self.pen_mode;
+        let mut overlay = self.overlay;
+        let mut stats_changed = false;
+        egui::Popup::menu(&corner.menu)
+            .id(menu_id)
+            .align(egui::RectAlign::LEFT_START)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(260.0);
+                ui.style_mut().spacing.interact_size.y = 44.0;
+                ui.style_mut().spacing.icon_width = 24.0;
+                let text = |t: &str| egui::RichText::new(t).size(20.0);
+                ui.checkbox(&mut pen_mode, text("Pen"));
+                ui.checkbox(&mut overlay.powerpoint, text("PowerPoint mode"));
+                ui.checkbox(&mut overlay.hidden, text("Hide"));
+                stats_changed = ui
+                    .checkbox(&mut overlay.show_stats, text("Show statistics"))
+                    .changed();
+                if let Some(note) = &self.overlay_note {
+                    ui.colored_label(egui::Color32::LIGHT_RED, note);
+                }
+            });
+        self.pen_mode = pen_mode;
+        self.overlay = overlay;
+        if stats_changed {
+            self.overlay_note =
+                mirrorwire_net::settings::save_show_stats(&self.data_dir, overlay.show_stats)
+                    .err()
+                    .map(|e| {
+                        tracing::warn!("saving Show statistics: {e:#}");
+                        format!("Could not save this choice: {e:#}")
+                    });
+        }
+        if corner.disconnect_clicked {
+            self.disconnect();
         }
     }
 }
