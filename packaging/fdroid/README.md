@@ -78,9 +78,11 @@ CI (`build.yml`, Android job) rebuilds unsigned in a different target directory 
 ## Checklist for Thomas
 
 1. Add 2-8 real screenshots to `fastlane/metadata/android/en-US/images/phoneScreenshots/`.
-2. Release v0.2.2 (tag), signed with the release key, with `MirrorWire-arm64-v8a.apk` attached.
-3. Get the release certificate hash and put it into the yml
-   (`AllowedAPKSigningKeys`): `apksigner verify --print-certs MirrorWire-arm64-v8a.apk | grep SHA-256`.
+2. ~~Release v0.2.2~~ done: signed with the release key, `MirrorWire-arm64-v8a.apk` attached.
+3. ~~Release certificate hash~~ done: `AllowedAPKSigningKeys` in the yml is the SHA-256
+   `4757b5b651b55f9f8e74f0f1202f0f367a0d16d2d74c46a9bf801c9bee5acaca` (CN=Thomas Barth, v2 + v3 signed),
+   read with `apksigner verify --print-certs` from the published v0.2.2 APK. A local build at the tag
+   passed `apksigcopier compare` against that APK.
 4. Fork <https://gitlab.com/fdroid/fdroiddata>, copy the yml to `metadata/io.github.windwerfer.mirrorwire.yml`,
    run `fdroid lint`, `fdroid rewritemeta` and `fdroid build -v -l io.github.windwerfer.mirrorwire`
    (fdroidserver docs), open the merge request; the checkmr bot and reviewers comment there.

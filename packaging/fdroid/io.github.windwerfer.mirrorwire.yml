@@ -44,10 +44,8 @@ Builds:
 # Verify F-Droid's build against the APK the project publishes, then ship the project's own
 # signature (Reproducible Builds flow, apksigcopier). Needs the release key's certificate hash.
 Binaries: https://github.com/windwerfer/mirrorwire/releases/download/v%v/MirrorWire-arm64-v8a.apk
-# TODO(Thomas): fill in the SHA-256 of the RELEASE signing certificate (not the debug key):
-#   apksigner verify --print-certs MirrorWire-arm64-v8a.apk | grep 'SHA-256'
-# then uncomment (lowercase hex, no colons):
-# AllowedAPKSigningKeys: <64 hex characters>
+# SHA-256 of the release signing certificate (apksigner verify --print-certs on the v0.2.2 APK).
+AllowedAPKSigningKeys: 4757b5b651b55f9f8e74f0f1202f0f367a0d16d2d74c46a9bf801c9bee5acaca
 
 # Tags: the tag v<version> is the release. The versionCode is read from Cargo.toml
 # ([workspace.metadata.android] version_code) and the versionName from the version line.

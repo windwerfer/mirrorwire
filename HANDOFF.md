@@ -50,7 +50,14 @@
 - Show statistics is persisted in `settings.json` (`show_stats`, on unless `"off"`), desktop in the config dir, Android in the app data dir.
 - Not hardware-tested (no tablet, no GUI run in the container). See the checklist line in testing.md §4.
 
-## Release status (2026-11-25)
+## Release status (2026-11-25, v0.2.2 published)
+- v0.2.2: tag `v0.2.2` (annotated) on 0ab0c33f4ff4c35a0701352e512fd682ccc3aa9c, tag Build run 45634094882 green, release https://github.com/windwerfer/mirrorwire/releases/tag/v0.2.2 with AppImage, Flatpak, Windows zip, macOS DMG, arm64 APK. (The main Build run's macOS arm64 job was cancelled while queued for a runner and re-run; no code change.)
+- APK: package io.github.windwerfer.mirrorwire, versionCode 2002, versionName 0.2.2; signed v2 + v3 (v1 false); signer CN=Thomas Barth, certificate SHA-256 `4757b5b651b55f9f8e74f0f1202f0f367a0d16d2d74c46a9bf801c9bee5acaca`, now in `AllowedAPKSigningKeys`. Published APK sha256 `c9fbecbddbe9bbc00238d06f4b7e25a1afc9bd49c60c27172db135469fd34c31`.
+- Reproducibility: a local unsigned build at the tag (worktree /workspace/mw-merge, NDK 27.2.12479018) has sha256 `bb69548011b6b53adb923352d076a4e319afb8094aae7d105c2b5f1abfff4945`; `apksigcopier compare <published> --unsigned <local>` passed (exit 0).
+- SonarCloud: security rating A (1.0), 0 vulnerabilities after 0ab0c33 (`Path.resolve()` + base-directory check in the two scripts).
+- Still for Thomas: screenshots, fdroiddata MR, IzzyOnDroid request, hardware retest (pen, menu, no-video modes).
+
+## Earlier release status (2026-11-25, v0.2.1)
 - v0.2.0 (tag 3161a39 -> 5d27d7c) was tagged but never released: Audit failed on RUSTSEC-2026-0592 (url 2.5.8), so no GitHub Release exists for it. The tag is untouched.
 - v0.2.1 (commit 88192b2a3c43cf4e5bd2f47be85ecff0f6376894, annotated tag v0.2.1) is the first published 0.2 release: https://github.com/windwerfer/mirrorwire/releases/tag/v0.2.1
 - Assets: MirrorWire-x86_64.AppImage, MirrorWire-x86_64.flatpak, MirrorWire-windows.zip, MirrorWire-0.2.1-macos-universal.dmg, MirrorWire-arm64-v8a.apk.
