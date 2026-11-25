@@ -226,3 +226,159 @@ pub fn parse_size(s: &str) -> Result<(u32, u32)> {
         .ok_or_else(|| anyhow!("size must be WIDTHxHEIGHT, got {s:?}"))?;
     Ok((w.trim().parse()?, h.trim().parse()?))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_names_round_trip_and_junk_is_rejected() {
+        for b in [
+            EncoderBackend::Auto,
+            EncoderBackend::Vaapi,
+            EncoderBackend::X264,
+            EncoderBackend::VideoToolbox,
+            EncoderBackend::Filmcraft,
+        ] {
+            assert_eq!(b.as_str().parse::<EncoderBackend>().unwrap(), b);
+        }
+        assert_eq!(
+            "SoftWare".parse::<EncoderBackend>().unwrap(),
+            EncoderBackend::X264
+        );
+        let err = "nvenc".parse::<EncoderBackend>().unwrap_err().to_string();
+        assert!(err.contains("nvenc") && err.contains("filmcraft"), "{err}");
+    }
+
+    #[test]
+    fn selectable_backends_start_with_auto_and_are_compiled_in() {
+        let v = EncoderBackend::selectable();
+        assert_eq!(v.first(), Some(&EncoderBackend::Auto));
+        assert!(v.contains(&EncoderBackend::X264));
+        assert!(v.iter().all(|b| b.compiled_in()));
+        assert_eq!(
+            v.contains(&EncoderBackend::Filmcraft),
+            cfg!(feature = "filmcraft")
+        );
+    }
+
+    #[test]
+    fn rate_control_names_round_trip() {
+        for rc in RateControl::all() {
+            assert_eq!(rc.as_str().parse::<RateControl>().unwrap(), *rc);
+        }
+        assert_eq!("QP".parse::<RateControl>().unwrap(), RateControl::Cqp);
+        assert!("abr".parse::<RateControl>().is_err());
+    }
+
+    #[test]
+    fn size_defaults_to_the_capture_and_follows_the_aspect_ratio() {
+        let mut c = EncoderConfig::default();
+        assert_eq!(c.resolved_size(1920, 1080), (1920, 1080));
+        // Odd capture sizes are made even for 4:2:0.
+        assert_eq!(c.resolved_size(1921, 1081), (1920, 1080));
+        c.width = 1280;
+        assert_eq!(c.resolved_size(1920, 1080), (1280, 720));
+        c.width = 0;
+        c.height = 720;
+        assert_eq!(c.resolved_size(1920, 1080), (1280, 720));
+        c.width = 800;
+        assert_eq!(c.resolved_size(1920, 1080), (800, 720));
+        // A zero-sized capture never divides by zero.
+        assert_eq!(EncoderConfig::default().resolved_size(0, 0), (2, 2));
+    }
+
+    #[test]
+    fn size_is_limited_to_the_encoder_maximum_and_max_size() {
+        let c = EncoderConfig::default();
+        let (w, h) = c.resolved_size(5120, 2880);
+        assert_eq!((w, h), (4096, 2304));
+        let (w, h) = c.resolved_size(8192, 8192);
+        assert!(u64::from(w) * u64::from(h) <= MAX_ENCODE_PIXELS);
+        assert!(w <= MAX_ENCODE_EDGE && h <= MAX_ENCODE_EDGE && w % 2 == 0 && h % 2 == 0);
+        let c = EncoderConfig {
+            max_size: Some((1280, 720)),
+            ..Default::default()
+        };
+        assert_eq!(c.resolved_size(2560, 1440), (1280, 720));
+        // Smaller than the limit: never scaled up.
+        assert_eq!(c.resolved_size(640, 360), (640, 360));
+        // A zero limit means "no limit".
+        let c = EncoderConfig {
+            max_size: Some((0, 720)),
+            ..Default::default()
+        };
+        assert_eq!(c.resolved_size(2560, 1440), (2560, 1440));
+    }
+
+    #[test]
+    fn gop_is_ten_seconds_unless_set() {
+        let mut c = EncoderConfig::default();
+        assert_eq!(c.gop_frames(), 600);
+        c.keyint = Some(0);
+        assert_eq!(c.gop_frames(), 600);
+        c.keyint = Some(30);
+        assert_eq!(c.gop_frames(), 30);
+        c.keyint = None;
+        c.fps = 0;
+        assert_eq!(c.gop_frames(), 1);
+    }
+
+    #[test]
+    fn reopen_is_needed_only_for_settings_the_encoder_cannot_change_live() {
+        let a = EncoderConfig::default();
+        assert!(!a.reopen_needed(&a.clone(), 1920, 1080));
+        // The running output size no longer matches what the config resolves to.
+        let sized = EncoderConfig {
+            width: 1280,
+            ..a.clone()
+        };
+        assert!(sized.reopen_needed(&sized, 1920, 1080));
+        assert!(!sized.reopen_needed(&sized, 1280, 720));
+        for b in [
+            EncoderConfig {
+                bitrate_kbps: 1000,
+                ..a.clone()
+            },
+            EncoderConfig {
+                backend: EncoderBackend::X264,
+                ..a.clone()
+            },
+            EncoderConfig {
+                rate_control: RateControl::Cqp,
+                ..a.clone()
+            },
+            EncoderConfig {
+                qp: 30,
+                ..a.clone()
+            },
+            EncoderConfig {
+                keyint: Some(5),
+                ..a.clone()
+            },
+            EncoderConfig {
+                intra_refresh: true,
+                ..a.clone()
+            },
+            EncoderConfig {
+                vaapi_device: "/dev/dri/renderD129".into(),
+                ..a.clone()
+            },
+            EncoderConfig {
+                fps: 30,
+                ..a.clone()
+            },
+        ] {
+            assert!(a.reopen_needed(&b, 1920, 1080), "{b:?}");
+        }
+    }
+
+    #[test]
+    fn parse_size_accepts_both_separators_and_rejects_junk() {
+        assert_eq!(parse_size("1920x1080").unwrap(), (1920, 1080));
+        assert_eq!(parse_size(" 1280 × 720 ").unwrap(), (1280, 720));
+        assert!(parse_size("1920").is_err());
+        assert!(parse_size("axb").is_err());
+        assert!(parse_size("-1x5").is_err());
+    }
+}
