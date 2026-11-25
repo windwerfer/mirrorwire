@@ -1,0 +1,7 @@
+# The exact compiler CI, the release builds and F-Droid's reproducible APK build use.
+# Bump it in one commit with a green `cargo xtask ci` (and the reproducibility check in
+# packaging/fdroid/README.md); a new compiler changes the APK bytes.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
