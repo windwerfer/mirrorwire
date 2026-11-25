@@ -8,6 +8,13 @@
   machine whose VAAPI/x264 fails at once can still present. Always on in builds without
   FFmpeg.
 
+### Fixed
+- Pen/touch and remote keys never worked on KDE: the presenter passed `persist_mode` and a
+  restore token to ScreenCast `SelectSources` on RemoteDesktop sessions, which the spec does
+  not allow; KDE answered "Remote desktop sessions cannot persist" for the combined session
+  and for every pen attempt. Persistence now goes through `SelectDevices` only, and a session
+  that fails half-way is closed instead of left open.
+
 ## 0.2.1
 
 First published release of the 0.2 series. v0.2.0 was tagged but never released: its Audit job

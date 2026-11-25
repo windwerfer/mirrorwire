@@ -396,13 +396,22 @@ async fn plan_cast(proxy: &Screencast, opts: &PortalOptions) -> CastPlan {
     }
 }
 
+/// Sources for a plain ScreenCast session, kept with its own restore token.
 fn select_options(plan: &CastPlan, token: Option<&str>) -> SelectSourcesOptions {
+    remote_select_options(plan)
+        .set_persist_mode(PersistMode::ExplicitlyRevoked)
+        .set_restore_token(token)
+}
+
+/// Sources for a RemoteDesktop session: no `persist_mode` or `restore_token` here. The
+/// ScreenCast spec allows them only on screen cast sessions ("Persistent remote desktop screen
+/// cast sessions can only be handled via the Remote Desktop interface"); KDE rejects them with
+/// "Remote desktop sessions cannot persist". Persistence goes through `SelectDevices`.
+fn remote_select_options(plan: &CastPlan) -> SelectSourcesOptions {
     SelectSourcesOptions::default()
         .set_cursor_mode(plan.cursor_mode)
         .set_sources(plan.sources)
         .set_multiple(false)
-        .set_persist_mode(PersistMode::ExplicitlyRevoked)
-        .set_restore_token(token)
 }
 
 async fn read_token(path: &std::path::Path) -> Option<String> {
@@ -510,24 +519,35 @@ async fn start_combined(
     }
     let session = remote.create_session(Default::default()).await?;
     let token = read_token(&input.restore_token_path).await;
-    remote
-        .select_devices(
-            &session,
-            SelectDevicesOptions::default()
-                .set_devices(DeviceType::KEYBOARD | DeviceType::POINTER)
-                .set_persist_mode(PersistMode::ExplicitlyRevoked)
-                .set_restore_token(token.as_deref()),
-        )
-        .await?
-        .response()?;
-    cast.select_sources(&session, select_options(plan, token.as_deref()))
-        .await?
-        .response()?;
-    let started = remote
-        .start(&session, None, Default::default())
-        .await?
-        .response()
-        .context("screen share and remote access were cancelled or denied")?;
+    let started = async {
+        remote
+            .select_devices(
+                &session,
+                SelectDevicesOptions::default()
+                    .set_devices(DeviceType::KEYBOARD | DeviceType::POINTER)
+                    .set_persist_mode(PersistMode::ExplicitlyRevoked)
+                    .set_restore_token(token.as_deref()),
+            )
+            .await?
+            .response()?;
+        cast.select_sources(&session, remote_select_options(plan))
+            .await?
+            .response()?;
+        remote
+            .start(&session, None, Default::default())
+            .await?
+            .response()
+            .context("screen share and remote access were cancelled or denied")
+    }
+    .await;
+    let started = match started {
+        Ok(s) => s,
+        Err(e) => {
+            // Never leave a half-set-up session behind on the desktop.
+            let _ = session.close().await;
+            return Err(e);
+        }
+    };
     if !started
         .devices()
         .contains(DeviceType::KEYBOARD | DeviceType::POINTER)

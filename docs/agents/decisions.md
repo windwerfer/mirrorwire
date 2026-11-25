@@ -61,6 +61,25 @@ receiver/sender) would need revisiting if adopted.
 
 Newest first. Add an entry when the owner decides something non-obvious.
 
+- **2026-11-25 (RemoteDesktop persistence only via SelectDevices; pen permission UI):** owner
+  report: turning on the viewer's pen on a running KDE presenter left the stream frozen. The
+  log (11:18–11:20) showed the combined capture + input session and all four pen attempts
+  failing with `InvalidArgument: Remote desktop sessions cannot persist`; the capture source
+  dropped to 0 fps after the third attempt. Cause: `persist_mode`/`restore_token` were passed
+  to ScreenCast `SelectSources` on a RemoteDesktop session; the ScreenCast spec allows them
+  "only for screen cast sessions" and says persistent remote desktop screen cast sessions "can
+  only be handled via the Remote Desktop interface". Fix: `portal.rs::remote_select_options`
+  and `remote.rs` send `SelectSources` without them; `SelectDevices` keeps `persist_mode` 2 and
+  the token. Failed half-set-up sessions are now closed. Whether the frozen capture was caused
+  by those leaked failed sessions is not proven (not reproducible on the build box). New UI:
+  the presenter window shows a dialog while the separate session asks for pointer permission;
+  the start screen's ✏ next to Presenter is green while a RemoteDesktop restore token exists
+  (`remote_rights.rs`; the portal has no query call, so a token is the only signal) and its
+  box offers "Forget the pen and keys permission", which deletes MirrorWire's tokens (the
+  portal has no revoke call; the desktop may keep its record). Rejected: consuming the token
+  with `persist_mode` 0 to make the desktop drop it (the spec does not say a token passed with
+  mode 0 is invalidated without a new one; untestable here). Not tested: no portal on the build
+  box; needs a KDE run.
 - **2026-11-22 (D26, opt-in pen pressure via uinput, amends D1):** owner decision (Thomas): uinput may be used only as an explicit opt-in that is off by default. Checked first against the official docs whether pressure can go through the portal: the xdg-desktop-portal RemoteDesktop page (version 2) defines device types KEYBOARD=1, POINTER=2, TOUCHSCREEN=4 and Notify* methods without pressure, tilt or distance; `ConnectToEIS` hands over a libei connection, and the libei protocol docs list an `ei_stylus` interface (pressure, distance, tilt, tip/proximity), but no KDE/GNOME release note or doc read here says the compositor offers it through the portal, and `reis` 0.7.1 (MIT, our only pure-Rust libei option) has no stylus module. So uinput (kernel docs: uinput.rst, event-codes.rst) with the `evdev` crate (Apache-2.0 OR MIT; its `VirtualDevice` keeps our code free of `unsafe`, D15). Fix text: udev rule with `TAG+="uaccess"` (systemd sd-login: access tied to the active seat session; the same pattern systemd's own `70-uaccess.rules` uses for e.g. `rfkill`), file `/etc/udev/rules.d/70-mirrorwire-uinput.rules` so it sorts before `73-seat-late.rules`, which applies the tag; `OPTIONS+="static_node=uinput"` so the tag also reaches the static node that loads the module on first access (udev(7)); `udevadm control --reload` + `udevadm trigger --action=change --sysname-match=uinput` (udevadm(8): a reload alone does not touch existing devices). Rejected for the rule: `GROUP="input"` (membership also allows reading every keyboard and mouse, and needs a re-login), `MODE="0666"` (every user and service). Inside the Flatpak `/dev/uinput` is only visible with `--device=all`: Flatpak's device list is dri, input (`/dev/input` only), usb, kvm, shm, all, so nothing narrower exists; it is a user override, never in the manifest (D2 unchanged). Rejected alternatives for the feature: always-on uinput, no pressure, portal-only (see the table). Not tested: no uinput access, pen or KDE session on the build box; the device, KWin's mapping of the virtual pen to a screen, and Android's pressure values are unverified.
 - **2026-11-22 (D25, Flatpak hostname1 access):** owner approved
   `--system-talk-name=org.freedesktop.hostname1` for the Flatpak, so the "Name shown on

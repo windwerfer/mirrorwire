@@ -130,6 +130,27 @@ async fn open_session(token_path: &PathBuf, pointer: bool) -> Result<Remote> {
         bail!("the RemoteDesktop portal offers no pointer");
     }
     let session = proxy.create_session(Default::default()).await?;
+    match set_up(&proxy, &session, token_path, pointer).await {
+        Ok(stream) => Ok(Remote {
+            proxy,
+            session,
+            stream,
+        }),
+        Err(e) => {
+            // Never leave a half-set-up session behind on the desktop.
+            let _ = session.close().await;
+            Err(e)
+        }
+    }
+}
+
+/// SelectDevices (+ SelectSources for the pointer), Start, and keep the restore token.
+async fn set_up(
+    proxy: &RemoteDesktop,
+    session: &Session<RemoteDesktop>,
+    token_path: &PathBuf,
+    pointer: bool,
+) -> Result<Option<(u32, (i32, i32))>> {
     let token = tokio::fs::read_to_string(token_path)
         .await
         .ok()
@@ -142,7 +163,7 @@ async fn open_session(token_path: &PathBuf, pointer: bool) -> Result<Remote> {
     };
     proxy
         .select_devices(
-            &session,
+            session,
             SelectDevicesOptions::default()
                 .set_devices(devices)
                 .set_persist_mode(PersistMode::ExplicitlyRevoked)
@@ -155,20 +176,21 @@ async fn open_session(token_path: &PathBuf, pointer: bool) -> Result<Remote> {
         let cast = Screencast::new()
             .await
             .context("connecting to ScreenCast portal")?;
+        // No persist_mode / restore_token here: on a RemoteDesktop session persistence is
+        // SelectDevices' job only (ScreenCast spec; KDE: "Remote desktop sessions cannot
+        // persist").
         cast.select_sources(
-            &session,
+            session,
             SelectSourcesOptions::default()
                 .set_cursor_mode(CursorMode::HIDDEN)
                 .set_sources(SourceType::MONITOR)
-                .set_multiple(false)
-                .set_persist_mode(PersistMode::ExplicitlyRevoked)
-                .set_restore_token(token.as_deref()),
+                .set_multiple(false),
         )
         .await?
         .response()?;
     }
     let started = proxy
-        .start(&session, None, Default::default())
+        .start(session, None, Default::default())
         .await?
         .response()
         .context("remote access was cancelled or denied")?;
@@ -196,11 +218,7 @@ async fn open_session(token_path: &PathBuf, pointer: bool) -> Result<Remote> {
         }
         tokio::fs::write(token_path, t).await?;
     }
-    Ok(Remote {
-        proxy,
-        session,
-        stream,
-    })
+    Ok(stream)
 }
 
 /// Send one input through an open RemoteDesktop session. `stream` is the (node id, size) of
