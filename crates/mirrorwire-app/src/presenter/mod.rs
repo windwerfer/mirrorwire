@@ -356,11 +356,18 @@ fn start_remote(
     config_dir: &std::path::Path,
     ctl: &Arc<Mutex<CaptureCtl>>,
 ) -> Option<mpsc::Sender<mirrorwire_proto::control::RemoteInput>> {
-    let ctl = ctl.clone();
-    Some(mirrorwire_media::source::remote::spawn_remote_injector(
+    let note = ctl.clone();
+    match mirrorwire_media::source::remote::spawn_remote_injector(
         config_dir.join("remote-desktop.token"),
-        Arc::new(move |line| ctl.lock_ok().remote_note = Some(line)),
-    ))
+        Arc::new(move |line| note.lock_ok().remote_note = Some(line)),
+    ) {
+        Ok(tx) => Some(tx),
+        Err(e) => {
+            tracing::warn!("presenter remote: {e}");
+            ctl.lock_ok().remote_note = Some(format!("presenter remote unavailable: {e}"));
+            None
+        }
+    }
 }
 
 #[cfg(not(all(target_os = "linux", feature = "portal")))]

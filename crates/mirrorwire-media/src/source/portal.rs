@@ -146,10 +146,9 @@ impl PortalSource {
         let portal_thread = std::thread::Builder::new()
             .name("portal".into())
             .spawn(move || {
-                let rt = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
+                // The shared portal runtime, not one of our own: the D-Bus connection must
+                // outlive this capture (see `portal_rt`).
+                let rt = match crate::source::portal_rt::portal_runtime() {
                     Ok(rt) => rt,
                     Err(e) => {
                         let _ = negotiated_tx.send(Err(e.into()));

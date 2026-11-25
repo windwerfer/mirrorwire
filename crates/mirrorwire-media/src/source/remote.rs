@@ -68,15 +68,16 @@ impl KeyOnly {
     }
 }
 
-/// Start the key-only injector task on the current tokio runtime. Send taps into the
-/// returned sender; pen/touch sent here is refused with a note.
+/// Start the key-only injector task on the shared portal runtime (`portal_rt`). Send taps
+/// into the returned sender; pen/touch sent here is refused with a note.
 pub fn spawn_remote_injector(
     restore_token_path: PathBuf,
     status: RemoteStatusSink,
-) -> mpsc::Sender<RemoteInput> {
+) -> std::io::Result<mpsc::Sender<RemoteInput>> {
+    let rt = crate::source::portal_rt::portal_runtime()?;
     let (tx, mut rx) = mpsc::channel::<RemoteInput>(64);
     status("presenter remote: waiting for the first button press".into());
-    tokio::spawn(async move {
+    rt.spawn(async move {
         let mut session: Option<Remote> = None;
         let mut policy = KeyOnly::default();
         while let Some(input) = rx.recv().await {
@@ -125,7 +126,7 @@ pub fn spawn_remote_injector(
             }
         }
     });
-    tx
+    Ok(tx)
 }
 
 /// An open key-only RemoteDesktop session.
