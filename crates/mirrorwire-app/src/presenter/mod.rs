@@ -9,7 +9,7 @@ pub use status::{EncodeHud, PresentPhase, PresentStatus};
 
 use crate::capture_prefs::CapturePrefs;
 use crate::sync::LockExt;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use mirrorwire_media::encode::{parse_size, Encoder, EncoderConfig};
 use mirrorwire_media::frame::EncodedFrame;
 use mirrorwire_media::pipeline::{
@@ -374,6 +374,12 @@ fn start_remote(
     None
 }
 
+/// Creates the virtual pen for [`RemoteRoute`] (a mock in tests); nothing off Linux.
+#[cfg(target_os = "linux")]
+type RouteOpener = crate::pen::PenOpener;
+#[cfg(not(target_os = "linux"))]
+type RouteOpener = ();
+
 /// Routes remote input (keys, pen/touch) from the viewer to the current capture session when
 /// that session carries input (combined portal session), otherwise to the separate injector.
 /// The network side holds one stable sender; the capture source can be reopened underneath.
@@ -387,46 +393,66 @@ impl RemoteRoute {
     /// On Linux, pen input first passes the opt-in uinput pen (D26): while
     /// `CaptureCtl::pen_pressure` is on it goes to the virtual pen, everything else (and pen
     /// input when the pen cannot be created) to the portal.
+    ///
+    /// The route runs on its own thread, not on the network runtime: creating and writing the
+    /// uinput device are blocking system calls, and nothing on the input side may hold up the
+    /// tasks that read the viewer's control stream and send the video (owner report t316u).
+    /// Hand-over to the portal side is `try_send`, so a busy injector drops input instead.
     fn start(
         separate: Option<mpsc::Sender<mirrorwire_proto::control::RemoteInput>>,
-        runtime: &tokio::runtime::Handle,
         ctl: &Arc<Mutex<CaptureCtl>>,
-    ) -> Self {
+    ) -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        let open = crate::pen::uinput_opener();
+        #[cfg(not(target_os = "linux"))]
+        let open: RouteOpener = ();
+        Self::start_with(separate, ctl, open)
+    }
+
+    fn start_with(
+        separate: Option<mpsc::Sender<mirrorwire_proto::control::RemoteInput>>,
+        ctl: &Arc<Mutex<CaptureCtl>>,
+        open: RouteOpener,
+    ) -> Result<Self> {
         let (tx, mut rx) = mpsc::channel(64);
         let target: Arc<Mutex<Option<mpsc::Sender<_>>>> = Arc::new(Mutex::new(separate.clone()));
         let t = target.clone();
         #[cfg(target_os = "linux")]
         let ctl = ctl.clone();
         #[cfg(not(target_os = "linux"))]
-        let _ = ctl;
-        runtime.spawn(async move {
-            #[cfg(target_os = "linux")]
-            let mut pen = crate::pen::PenRouter::new(crate::pen::uinput_opener());
-            while let Some(input) = rx.recv().await {
+        let _ = (ctl, open);
+        std::thread::Builder::new()
+            .name("remote-input".into())
+            .spawn(move || {
                 #[cfg(target_os = "linux")]
-                let input = {
-                    let enabled = ctl.lock_ok().pen_pressure;
-                    let routed = pen.route(input, enabled);
-                    if let Some(note) = routed.note {
-                        ctl.lock_ok().pen_note = Some(note);
-                    }
-                    let Some(input) = routed.portal else {
-                        continue;
+                let mut pen = crate::pen::PenRouter::new(open);
+                // Ends when the network side drops its sender (presenter closed).
+                while let Some(input) = rx.blocking_recv() {
+                    #[cfg(target_os = "linux")]
+                    let input = {
+                        let enabled = ctl.lock_ok().pen_pressure;
+                        let routed = pen.route(input, enabled);
+                        if let Some(note) = routed.note {
+                            ctl.lock_ok().pen_note = Some(note);
+                        }
+                        let Some(input) = routed.portal else {
+                            continue;
+                        };
+                        input
                     };
-                    input
-                };
-                let dest = t.lock_ok().clone();
-                if let Some(dest) = dest {
-                    // Full channel: drop (moves are replaced by newer ones).
-                    let _ = dest.try_send(input);
+                    let dest = t.lock_ok().clone();
+                    if let Some(dest) = dest {
+                        // Full channel: drop (moves are replaced by newer ones).
+                        let _ = dest.try_send(input);
+                    }
                 }
-            }
-        });
-        Self {
+            })
+            .context("starting the remote input thread")?;
+        Ok(Self {
             tx,
             separate,
             target,
-        }
+        })
     }
 
     fn sender(&self) -> mpsc::Sender<mirrorwire_proto::control::RemoteInput> {
@@ -491,7 +517,7 @@ fn present_session(
             tracing::info!("pen pressure on (virtual uinput pen on the first stroke)");
         }
     }
-    let route = RemoteRoute::start(start_remote(&config_dir, &ctl), runtime, &ctl);
+    let route = RemoteRoute::start(start_remote(&config_dir, &ctl), &ctl)?;
     route.set_source(source.as_ref(), &ctl);
     let remote_keys = Some(route.sender());
     let presenter = Presenter::start(
@@ -1021,6 +1047,85 @@ mod tests {
     use super::*;
     use crate::capture_prefs::{CursorPref, FpsPref};
     use mirrorwire_proto::fec::FecMode;
+    use std::time::Duration;
+
+    /// Owner report t316u: a pen input path that blocks (here: creating the virtual pen
+    /// hangs, as a stuck `/dev/uinput` open would) must not hold up the runtime that reads
+    /// the viewer's control stream and sends the video, and handing input over never waits.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_blocking_pen_device_does_not_stall_the_network_runtime() {
+        use mirrorwire_proto::control::{PointerPhase, RemoteInput, RemoteKey};
+        use std::sync::mpsc as std_mpsc;
+        let ctl = Arc::new(Mutex::new(CaptureCtl::new(CapturePrefs::default())));
+        ctl.lock_ok().pen_pressure = true;
+        let (release_tx, release_rx) = std_mpsc::channel::<()>();
+        let (opened_tx, opened_rx) = std_mpsc::channel::<()>();
+        let opener: crate::pen::PenOpener = Box::new(move || {
+            let _ = opened_tx.send(());
+            let _ = release_rx.recv(); // hangs until the test lets go
+            Err(std::io::Error::from(std::io::ErrorKind::TimedOut))
+        });
+        let (portal_tx, mut portal_rx) = mpsc::channel(64);
+        // The "network runtime": single-threaded, so one blocking call on it stops the ticker.
+        // It runs on a watchdog thread so a stalled runtime fails the test instead of hanging.
+        let (done_tx, done_rx) = std_mpsc::channel();
+        let ctl_net = ctl.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let route = {
+                let _g = rt.enter();
+                RemoteRoute::start_with(Some(portal_tx), &ctl_net, opener).unwrap()
+            };
+            let input = route.sender();
+            let ticks = rt.block_on(async {
+                input
+                    .try_send(RemoteInput::Pointer {
+                        phase: PointerPhase::Down,
+                        x: 1,
+                        y: 2,
+                        pressure: Some(100),
+                    })
+                    .unwrap();
+                let mut ticks = 0;
+                let mut every = tokio::time::interval(Duration::from_millis(10));
+                let end = tokio::time::Instant::now() + Duration::from_millis(300);
+                while tokio::time::Instant::now() < end {
+                    every.tick().await;
+                    // Hand-over never waits, even while the route is stuck.
+                    let _ = input.try_send(RemoteInput::Key(RemoteKey::Next));
+                    ticks += 1;
+                }
+                ticks
+            });
+            let _ = done_tx.send(ticks);
+            // Keep the route alive until the test has looked at the portal side.
+            std::thread::sleep(Duration::from_secs(1));
+            drop(route);
+        });
+        let ticks = done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("the network runtime stalled behind the pen device");
+        assert!(
+            ticks >= 20,
+            "network runtime stalled: {ticks} ticks in 300 ms"
+        );
+        opened_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the pen opener was not called");
+        // Unblock: the pen falls back to the portal, which gets the stroke.
+        release_tx.send(()).unwrap();
+        let first = portal_rx.blocking_recv();
+        assert!(matches!(first, Some(RemoteInput::Pointer { .. })));
+        assert!(ctl
+            .lock_ok()
+            .pen_note
+            .as_deref()
+            .is_some_and(|n| n.contains("not available")));
+    }
 
     #[test]
     fn encoder_rate_follows_compositor() {
