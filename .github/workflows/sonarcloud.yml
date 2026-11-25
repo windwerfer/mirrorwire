@@ -81,9 +81,12 @@ jobs:
 
       # Unit/integration tests only. The 5 s loopback is a separate process and
       # would need a second instrumented run; skip it to keep this job short.
+      # The default features plus FilmCraft: tests behind the optional `filmcraft`
+      # feature (Miracast end to end, presenter/viewer paths) must be compiled in
+      # or their code counts as uncovered.
       - name: Coverage (lcov)
         if: steps.token.outputs.available == 'true'
-        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --locked --features mirrorwire-app/filmcraft --lcov --output-path lcov.info
 
       - name: Check reports
         if: steps.token.outputs.available == 'true'
