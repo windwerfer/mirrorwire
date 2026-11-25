@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Fixed: pressing **Pen** on the viewer could stop the Linux presenter's video until it was
+  restarted (the process kept running). The presenter's control reader waited for the input
+  path to take each pen press and release; while it waited, the viewer looked silent and the
+  video paused. Input is now handed over without waiting (a full queue drops moves and presses,
+  a release is retried), the input router runs on its own thread, and every portal input call
+  has a 2 s limit. No protocol change.
+- Changed: when capture and input cannot share one portal session, the separate fallback
+  session is now keys only. Pen/touch there shows a note instead of starting a second
+  screen-cast session (and dialog) while the capture runs. The opt-in virtual pen (D26) is not
+  affected.
+
 ## 0.2.1
 
 First published release of the 0.2 series. v0.2.0 was tagged but never released: its Audit job
