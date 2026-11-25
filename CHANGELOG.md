@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed: the shared capture + input portal session was always refused ("Remote desktop
+  sessions cannot persist") because persistence options were passed to the screen-cast part;
+  pen/touch input therefore never worked through it, and the old pointer fallback failed on
+  every pen down. Persistence now goes through the RemoteDesktop part only.
+
 - Fixed: after the capture was reopened (Mirror/Extend, cursor or frame-rate change, also by a
   pen tap on the presenter window in Mirror mode) the Linux presenter could hang with no video
   until restarted, with no dialog. All portal calls now share one long-lived runtime, so the
