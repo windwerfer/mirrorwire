@@ -673,3 +673,14 @@ screen**, not logs. So:
   you hand out links, check every artifact exists and link the attempt that has it (`gh api
   repos/windwerfer/mirrorwire/actions/runs/<id>/artifacts`).
 - Do not change workflows as a side effect of a feature. A workflow change is its own commit.
+
+## Android APK reproducibility (0.2.2)
+
+The unsigned APK must be byte-identical for the same commit, whatever the checkout path or
+`CARGO_TARGET_DIR`. CI (`build.yml`, Android job) rebuilds with `MIRRORWIRE_UNSIGNED=1` in another
+target directory and runs `apksigcopier compare` against the signed APK. Locally: the commands
+in `packaging/fdroid/README.md`. Any change to the toolchain, `build-apk.sh` flags, NDK or build-tools
+changes the bytes: rerun the two-clone comparison and diff with diffoscope (venv under /tmp) if
+the hashes differ. Known leak fixed: build-script `OUT_DIR` paths (`glutin_egl_sys`) need the
+target dir remapped. `apksigner sign` needs `--alignment-preserved true` or the copied signature
+fails.

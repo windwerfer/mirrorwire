@@ -38,6 +38,10 @@ Low-latency screen mirroring over a LAN, written in Rust. One binary (`mirrorwir
 - Viewer UI: eframe/egui on wgpu (Metal on macOS, Vulkan/GL on Linux), with a list
   of discovered presenters, a box to paste a URI, the video, and a stats overlay.
 
+**Android build.** `packaging/android/build-apk.sh` builds the APK reproducibly (pinned toolchain,
+versionCode from the version: 0.2.2 is 2002). F-Droid and IzzyOnDroid notes:
+[packaging/fdroid/README.md](packaging/fdroid/README.md).
+
 ## Layout
 
 ```

@@ -180,7 +180,8 @@ crates/mirrorwire-android             android_main -> eframe (glow) -> ViewerApp
   codec_list.rs  parses/ranks h264_decoders.txt; vendor low-latency keys (Qualcomm, Exynos)
   stats.rs    pipeline counters -> HUD "in / decoded / shown fps" + a stall warning that
               names the stuck stage
-packaging/android/build-apk.sh        cargo-ndk + javac/d8 + aapt2 + zipalign + apksigner (no Gradle)
+packaging/android/build-apk.sh        cargo-ndk + javac/d8 + aapt2 + zipalign + apksigner (no Gradle); reproducible, see packaging/fdroid/README.md
+packaging/fdroid/                     F-Droid metadata draft + submission notes; fastlane/ holds the store texts
 ```
 
 The Java shell stays minimal: new features go into the Rust crate. It only grows for what has
