@@ -642,7 +642,7 @@ screen**, not logs. So:
 - `ci.yml` (push to `main`, PRs): `cargo fmt --all -- --check`, clippy `-D warnings`, `cargo test`, 5 s loopback with x264,
   then clippy/tests/5 s loopback again with feature `filmcraft` and `--encoder filmcraft`,
   the reusable audit workflow, and the reusable SonarCloud scan (`needs: audit`).
-- `fuzz.yml` (nightly cron 03:17 UTC + manual): the only workflow on **nightly** Rust (D18). Media and film tests under AddressSanitizer, then 60 s each of the cargo-fuzz targets in `fuzz/` (`film_decode`, `proto_parse`, `reassembler`). Local: `cd fuzz && cargo +nightly fuzz run proto_parse -- -max_total_time=20`. Crashes upload as an artifact.
+- `fuzz.yml` (nightly cron 03:17 UTC + manual): the only workflow on **nightly** Rust (D18). Media and film tests under AddressSanitizer, then 60 s each of the cargo-fuzz targets in `fuzz/` (`film_decode`, `proto_parse`, `reassembler`). Local: `cd fuzz && cargo +nightly fuzz run proto_parse -- -max_total_time=20`. Crashes upload as an artifact. The workflow sets `RUSTUP_TOOLCHAIN: nightly` because `rust-toolchain.toml` (1.100.0) otherwise wins over the installed nightly; each job prints `rustc -vV` first.
 - `sonarcloud.yml` (called from CI; also from Build on `v*` tags and
   `workflow_dispatch`; can be dispatched on its own): if the repository variable
   `SONAR_CI_ANALYSIS` is not `true`, or `SONAR_TOKEN` is

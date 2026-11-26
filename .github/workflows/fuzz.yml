@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# rust-toolchain.toml pins the repo to stable 1.100.0, and rustup prefers that pin over the
+# default toolchain, so plain `cargo` here would run 1.100.0 and reject -Zsanitizer / cargo-fuzz.
+# RUSTUP_TOOLCHAIN overrides the pin for every step of both jobs (nightly only here, D18).
+env:
+  RUSTUP_TOOLCHAIN: nightly
+
 jobs:
   asan:
     name: AddressSanitizer (media tests)
@@ -25,6 +31,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: nightly
+      - name: Show compiler
+        run: rustc -vV
       - name: Media + film tests under AddressSanitizer
         env:
           RUSTFLAGS: -Zsanitizer=address
@@ -38,6 +46,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: nightly
+      - name: Show compiler
+        run: rustc -vV
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked --version 0.13.2
       - name: Fuzz wire parsers

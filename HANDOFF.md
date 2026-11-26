@@ -1,5 +1,13 @@
 # HANDOFF
 
+## Fuzz + ASan fix (2026-11-26)
+- Goal: scheduled run 45820162519 failed (both jobs, <1 min). Cause: `rust-toolchain.toml` pins 1.100.0 and rustup prefers it over the nightly dtolnay installs, so plain cargo ran stable and rejected `-Zsanitizer=address`.
+- Done: `fuzz.yml` sets workflow-level `RUSTUP_TOOLCHAIN: nightly` (with a comment) and prints `rustc -vV` at the start of each job. Notes added to testing.md and decisions.md (follow-up to D18). Pin, fuzz targets, sanitizer flags untouched.
+- Verified locally: with the pin, `rustc -Zsanitizer=address --version` fails ("only accepted on the nightly compiler"); with `RUSTUP_TOOLCHAIN=nightly` it prints rustc 1.102.0-nightly. YAML parses. NOT run: the workflow itself, a fuzz run or the ASan tests.
+- Open: `cargo install cargo-fuzz` and the dtolnay action under the env var are unverified until CI runs.
+- Commit: see `git log -1` (not pushed; no token).
+- Next: manager pushes, triggers fuzz.yml via workflow_dispatch, watches it plus the other CI and the SonarCloud gate.
+
 ## Flaky nack test (2026-11-25)
 - `nack_makes_the_presenter_resend_a_lost_fragment` asserted `resent_useful == 1`. A stall (>15 ms, TAIL_QUIET_US) mid-frame makes the viewer NACK fragments that are only late; their resends can land first and fill gaps too, so useful > 1 legitimately (CI log of run 44990072133: requested 22, resent_received 22, resent_useful 2). Not a Reassembler bug (useful counts only new fills). Test now asserts requested >= 1 and 1 <= useful <= resent_received, frame bytes equal. Not reproducible on this Linux box (0/400, also under load).
 
