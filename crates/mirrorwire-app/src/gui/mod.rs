@@ -205,9 +205,8 @@ pub fn run(
                     pen_mode: false,
                     view_mode: ViewMode::Video,
                     video_paused_sent: None,
-                    pen_down: false,
+                    sampler: mirrorwire_proto::control::PenSampler::default(),
                     pen_pressure: None,
-                    pen_last_move: None,
                     fullscreen: false,
                     display_latency_ms: 0.0,
                     screen: if start_in_view {
@@ -309,10 +308,10 @@ struct MirrorApp {
     view_mode: ViewMode,
     /// `video_paused` last sent on this connection (`None` = not yet: send on connect).
     video_paused_sent: Option<bool>,
-    pen_down: bool,
+    /// Stroke state and hover/move coalescing for the pen (`mirrorwire_proto::control`).
+    sampler: mirrorwire_proto::control::PenSampler,
     /// Last pen/touch force seen while pen mode is on (`None`: no sensor, e.g. a mouse).
     pen_pressure: Option<u16>,
-    pen_last_move: Option<Instant>,
     fullscreen: bool,
     display_latency_ms: f64,
     screen: Screen,

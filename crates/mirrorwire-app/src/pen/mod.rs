@@ -80,6 +80,8 @@ pub struct PenRouter {
     /// switched off and on again.
     failed: bool,
     enabled: bool,
+    /// The virtual pen is touching (between a routed `Down` and `Up`).
+    touching: bool,
 }
 
 /// Window line while the virtual pen is in use.
@@ -94,6 +96,7 @@ impl PenRouter {
             device: None,
             failed: false,
             enabled: false,
+            touching: false,
         }
     }
 
@@ -104,6 +107,7 @@ impl PenRouter {
             self.enabled = enabled;
             self.failed = false;
             if !enabled && self.device.take().is_some() {
+                self.touching = false;
                 // Dropping the device lifts a pressed pen and removes it.
                 note = Some(NOTE_OFF.to_owned());
             }
@@ -141,14 +145,25 @@ impl PenRouter {
                 }
             }
         }
+        // Hover (tip up): the virtual pen has nothing to say without contact (it only
+        // reports proximity with a touch), so the portal pointer follows the hovering pen.
+        if phase == PointerPhase::Move && !self.touching {
+            return portal(note);
+        }
         let Some(device) = self.device.as_mut() else {
             return portal(note);
         };
+        match phase {
+            PointerPhase::Down => self.touching = true,
+            PointerPhase::Up => self.touching = false,
+            PointerPhase::Move => {}
+        }
         match device.send(phase, x, y, pressure) {
             Ok(()) => Routed { portal: None, note },
             Err(e) => {
                 tracing::warn!("pen pressure: writing to the virtual pen failed: {e}");
                 self.device = None;
+                self.touching = false;
                 self.failed = true;
                 portal(Some(unavailable(&e)))
             }
@@ -247,6 +262,32 @@ mod tests {
         );
         assert_eq!(*opens.lock().unwrap(), 0);
         assert!(log.lock().unwrap().is_empty());
+    }
+
+    /// Hover with pen pressure on: the tip-up moves go to the portal pointer (so the presenter's
+    /// cursor follows), strokes still go to the virtual pen, and hover after the lift again.
+    /// Before the fix a tip-up move was swallowed by the device (which ignores it).
+    #[test]
+    fn hover_moves_the_portal_pointer_even_with_the_virtual_pen_open() {
+        let (mut r, log, _) = router(true, false);
+        let hover = ptr(PointerPhase::Move, Some(0));
+        // Before any stroke (no device yet) and after the device exists.
+        assert_eq!(r.route(hover, true).portal, Some(hover));
+        assert_eq!(r.route(ptr(PointerPhase::Down, Some(9)), true).portal, None);
+        assert_eq!(r.route(ptr(PointerPhase::Move, Some(9)), true).portal, None);
+        assert_eq!(r.route(ptr(PointerPhase::Up, None), true).portal, None);
+        assert_eq!(r.route(hover, true).portal, Some(hover));
+        // A second stroke still reaches the device.
+        assert_eq!(r.route(ptr(PointerPhase::Down, Some(5)), true).portal, None);
+        assert_eq!(
+            *log.lock().unwrap(),
+            [
+                (PointerPhase::Down, Some(9)),
+                (PointerPhase::Move, Some(9)),
+                (PointerPhase::Up, None),
+                (PointerPhase::Down, Some(5)),
+            ]
+        );
     }
 
     #[test]

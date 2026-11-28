@@ -218,7 +218,7 @@ impl MirrorApp {
             ui.scope_id().with("video"),
             egui::Sense::click_and_drag(),
         );
-        if !menu_was_open || self.pen_down {
+        if !menu_was_open || self.sampler.is_down() {
             self.send_pen(&ctx, &response, picture_rect, &status);
         }
         // Never call Response methods inside `ctx.input(..)`: on a click,
@@ -388,8 +388,7 @@ impl MirrorApp {
         let Some(tx) = &status.control else { return };
         let Some(pic) = picture else { return };
         if !self.pen_mode {
-            if self.pen_down {
-                self.pen_down = false;
+            if self.sampler.cancel() {
                 // Leaving pen mode mid-press: release so the presenter button is not stuck.
                 let _ = tx.send(Control::Pointer {
                     phase: PointerPhase::Up,
@@ -420,33 +419,20 @@ impl MirrorApp {
             )
         });
         let Some(pos) = pos else { return };
-        if !response.contains_pointer() && !self.pen_down {
+        let over = response.contains_pointer();
+        if !over && !self.sampler.is_down() {
             return;
         }
-        let Some((x, y)) = pointer_in_rect(
+        let wire = pointer_in_rect(
             pos.x,
             pos.y,
             (pic.left(), pic.top(), pic.width(), pic.height()),
-        ) else {
-            return;
-        };
-        let phase = if pressed && response.contains_pointer() && !self.pen_down {
-            self.pen_down = true;
-            PointerPhase::Down
-        } else if self.pen_down && released {
-            self.pen_down = false;
-            PointerPhase::Up
-        } else if self.pen_down {
-            let now = Instant::now();
-            if self
-                .pen_last_move
-                .is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(16))
-            {
-                return;
-            }
-            self.pen_last_move = Some(now);
-            PointerPhase::Move
-        } else {
+        );
+        // Also with the tip up (hover): the presenter's cursor follows a pen in proximity.
+        let Some((phase, x, y)) = self
+            .sampler
+            .step(wire, over, pressed, released, Instant::now())
+        else {
             return;
         };
         let pressure = self.pen_pressure;
@@ -457,7 +443,12 @@ impl MirrorApp {
             phase,
             x,
             y,
-            pressure,
+            // Tip up (hover): no contact, so pressure 0, not the last stroke's reading.
+            pressure: if phase == PointerPhase::Move && !self.sampler.is_down() {
+                Some(0)
+            } else {
+                pressure
+            },
         });
     }
 

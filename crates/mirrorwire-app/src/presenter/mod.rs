@@ -1266,6 +1266,65 @@ mod tests {
         }
     }
 
+    fn hover_msgs() -> [mirrorwire_proto::control::RemoteInput; 3] {
+        use mirrorwire_proto::control::{PointerPhase, RemoteInput};
+        let ptr = |phase, pressure| RemoteInput::Pointer {
+            phase,
+            x: 100,
+            y: 200,
+            pressure,
+        };
+        [
+            ptr(PointerPhase::Move, Some(0)),
+            ptr(PointerPhase::Down, Some(500)),
+            ptr(PointerPhase::Up, None),
+        ]
+    }
+
+    /// Hover (pen in proximity, tip up) is a `Move` and reaches the injector like a stroke
+    /// does once the pen permission is in place; it carries no press, so leaving proximity
+    /// leaves no button down, and strokes around it still arrive in order.
+    #[test]
+    fn hover_reaches_the_injector_with_the_permission() {
+        let ctl = Arc::new(Mutex::new(CaptureCtl::new(CapturePrefs::default())));
+        {
+            let mut c = ctl.lock_ok();
+            c.want_input = true;
+            c.asked_input = true;
+        }
+        let (portal_tx, mut portal_rx) = mpsc::channel(64);
+        let route = RemoteRoute::start(Some(portal_tx), &ctl, &Controls::default()).unwrap();
+        let [hover, down, up] = hover_msgs();
+        for m in [hover, down, up, hover] {
+            route.sender().try_send(m).unwrap();
+        }
+        let got: Vec<_> = (0..4).map(|_| portal_rx.blocking_recv().unwrap()).collect();
+        assert_eq!(got, [hover, down, up, hover]);
+    }
+
+    /// While the desktop's permission dialog is pending nothing is injected (the pen
+    /// toggle's request is not skipped): the hover in front of a key tap is dropped, the tap
+    /// arrives (the route is a FIFO, so seeing the tap first proves the drop).
+    #[test]
+    fn hover_is_not_injected_while_the_permission_is_pending() {
+        use mirrorwire_proto::control::{RemoteInput, RemoteKey};
+        let ctl = Arc::new(Mutex::new(CaptureCtl::new(CapturePrefs::default())));
+        {
+            let mut c = ctl.lock_ok();
+            c.want_input = true; // asked for, dialog still open
+            c.remote_asking = true;
+            c.asked_input = true;
+        }
+        let (portal_tx, mut portal_rx) = mpsc::channel(64);
+        let route = RemoteRoute::start(Some(portal_tx), &ctl, &Controls::default()).unwrap();
+        let [hover, down, _] = hover_msgs();
+        let tap = RemoteInput::Key(RemoteKey::Next);
+        for m in [hover, down, tap] {
+            route.sender().try_send(m).unwrap();
+        }
+        assert_eq!(portal_rx.blocking_recv(), Some(tap));
+    }
+
     /// Owner report t316u: a pen input path that blocks (here: creating the virtual pen
     /// hangs, as a stuck `/dev/uinput` open would) must not hold up the runtime that reads
     /// the viewer's control stream and sends the video, and handing input over never waits.

@@ -73,10 +73,10 @@ struct ViewerApp {
     view_mode: ViewMode,
     /// `video_paused` last sent on this connection (`None` = not yet: send on connect).
     video_paused_sent: Option<bool>,
-    pen_down: bool,
+    /// Stroke state and hover/move coalescing (`mirrorwire_proto::control`).
+    sampler: mirrorwire_proto::control::PenSampler,
     /// Last pen/touch force seen while pen mode is on (`None`: the device reports none).
     pen_pressure: Option<u16>,
-    pen_last_move: Option<Instant>,
     last_uri_check: Instant,
     /// Texture of the separately sent cursor, by image id.
     cursor_tex: Option<(u32, egui::TextureHandle)>,
@@ -151,9 +151,8 @@ impl ViewerApp {
             pen_mode: false,
             view_mode: ViewMode::Video,
             video_paused_sent: None,
-            pen_down: false,
+            sampler: mirrorwire_proto::control::PenSampler::default(),
             pen_pressure: None,
-            pen_last_move: None,
             last_uri_check: Instant::now() - Duration::from_secs(1),
             cursor_tex: None,
             gpu,
@@ -455,7 +454,7 @@ impl ViewerApp {
         if response.clicked() && !self.pen_mode && !menu_was_open {
             self.overlay.hidden = !self.overlay.hidden;
         }
-        if !menu_was_open || self.pen_down {
+        if !menu_was_open || self.sampler.is_down() {
             self.send_pen(ui.ctx(), &response, picture_rect, status);
         }
         if self.view_mode == ViewMode::Remote {
@@ -659,8 +658,7 @@ impl ViewerApp {
         let Some(tx) = &status.control else { return };
         let Some(pic) = picture else { return };
         if !self.pen_mode {
-            if self.pen_down {
-                self.pen_down = false;
+            if self.sampler.cancel() {
                 // Leaving pen mode mid-press: release so the presenter button is not stuck.
                 let _ = tx.send(Control::Pointer {
                     phase: PointerPhase::Up,
@@ -688,30 +686,20 @@ impl ViewerApp {
         };
         let (pressed, down) =
             ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down()));
-        let Some((x, y)) = pointer_in_rect(
+        let wire = pointer_in_rect(
             pos.x,
             pos.y,
             (pic.left(), pic.top(), pic.width(), pic.height()),
+        );
+        // Also with the tip up (hover) once the platform reports it as a pointer position:
+        // the presenter's cursor follows a pen in proximity.
+        let Some((phase, x, y)) = self.sampler.step(
+            wire,
+            response.contains_pointer(),
+            pressed,
+            !down,
+            Instant::now(),
         ) else {
-            return;
-        };
-        let phase = if pressed && response.contains_pointer() && !self.pen_down {
-            self.pen_down = true;
-            PointerPhase::Down
-        } else if self.pen_down && !down {
-            self.pen_down = false;
-            PointerPhase::Up
-        } else if self.pen_down {
-            let now = Instant::now();
-            if self
-                .pen_last_move
-                .is_some_and(|t| now.duration_since(t) < Duration::from_millis(16))
-            {
-                return;
-            }
-            self.pen_last_move = Some(now);
-            PointerPhase::Move
-        } else {
             return;
         };
         let pressure = self.pen_pressure;
@@ -722,7 +710,12 @@ impl ViewerApp {
             phase,
             x,
             y,
-            pressure,
+            // Tip up (hover): no contact, so pressure 0, not the last stroke's reading.
+            pressure: if phase == PointerPhase::Move && !self.sampler.is_down() {
+                Some(0)
+            } else {
+                pressure
+            },
         });
     }
 
