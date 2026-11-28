@@ -610,13 +610,15 @@ fn present_session(
     let route = RemoteRoute::start(start_remote(&config_dir, &ctl), &ctl, &controls)?;
     route.set_source(source.as_ref(), &ctl);
     let remote_keys = Some(route.sender());
+    let bind = SocketAddr::new(
+        args.bind.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
+        args.port,
+    );
+    wait_for_port(bind);
     let presenter = Presenter::start(
         &identity,
         PresenterConfig {
-            bind: SocketAddr::new(
-                args.bind.unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
-                args.port,
-            ),
+            bind,
             stream_info: stream_info_from(&encoder, fps, active_cursor),
             pairing_code: pairing_code.clone(),
             config_dir: config_dir.clone(),
@@ -975,6 +977,66 @@ pub fn run(args: PresentArgs, config_dir: &Path) -> Result<()> {
     result
 }
 
+/// One presenter session at a time per process.
+///
+/// "Stop presenting" only raises a flag; the old `present` thread then closes the capture (a
+/// portal session and a PipeWire stream) and the QUIC endpoint, which takes a moment and, with
+/// a viewer connected or an unanswered portal dialog, longer. The GUI drops the handle at once
+/// and "Presenter" again spawns the next session. That one used to run in parallel with the
+/// old one: the same UDP port was still bound (`Address already in use`, no QR) and the portal
+/// got a second session while the first was closing (owner report t348u). The new session now
+/// waits here, on its own thread, until the old one is completely gone.
+#[cfg(feature = "gui")]
+static SESSION_SLOT: Mutex<()> = Mutex::new(());
+
+/// How long a new session waits for the old one before it says why it is still waiting.
+#[cfg(feature = "gui")]
+const SLOT_NOTE_AFTER: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Wait for the previous session to end. `None` when stopped while waiting.
+#[cfg(feature = "gui")]
+fn wait_for_slot(
+    controls: &Controls,
+    status: &Mutex<PresentStatus>,
+    notify: &dyn Fn(),
+) -> Option<std::sync::MutexGuard<'static, ()>> {
+    use std::sync::TryLockError;
+    let began = std::time::Instant::now();
+    let mut noted = false;
+    while !controls.stopped() {
+        match SESSION_SLOT.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(TryLockError::Poisoned(p)) => return Some(p.into_inner()),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        if !noted && began.elapsed() >= SLOT_NOTE_AFTER {
+            noted = true;
+            status.lock_ok().note = Some(
+                "The previous presenter session is still closing (its capture, or a screen \
+                 share dialog nobody answered). Starting as soon as it is gone."
+                    .into(),
+            );
+            notify();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    None
+}
+
+/// The UDP port of a session that just ended is released a moment after its endpoint is
+/// closed (the QUIC driver task has to finish, and with a viewer connected it first drains
+/// the connection). Wait until the port can be bound again; a port taken by another program
+/// stays taken, and the real bind then reports it.
+fn wait_for_port(bind: SocketAddr) {
+    if bind.port() == 0 {
+        return;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::net::UdpSocket::bind(bind).is_err() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// Start presenting with the GUI defaults (portal capture, pairing, mDNS).
 #[cfg(feature = "gui")]
 pub fn spawn_for_gui(
@@ -1045,9 +1107,16 @@ pub fn spawn(
             let connected = connected.clone();
             let hud_status = hud.clone();
             move || {
+                // Hold the slot until this session is fully closed (see `SESSION_SLOT`).
+                let Some(_slot) = wait_for_slot(&controls, &status, &notify) else {
+                    status.lock_ok().phase = PresentPhase::Stopped;
+                    notify();
+                    return;
+                };
                 {
                     let mut s = status.lock_ok();
                     s.phase = PresentPhase::WaitingForCapture;
+                    s.note = None;
                 }
                 notify();
 
@@ -1335,6 +1404,234 @@ mod tests {
         assert!(!c.needs_restart());
         c.prefs.fps = FpsPref::Max;
         assert!(c.needs_restart());
+    }
+
+    /// Headless presenter on a fixed port with the test pattern (the GUI always uses its
+    /// configured port, so a restart rebinds the very same UDP port).
+    #[cfg(feature = "gui")]
+    fn restart_args(port: u16) -> PresentArgs {
+        let localhost = Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let mut args = PresentArgs::gui_defaults();
+        args.source = SourceKind::Test;
+        (args.width, args.height) = (320, 180);
+        args.encoder = mirrorwire_media::encode::EncoderBackend::X264;
+        (args.port, args.bind, args.advertise_ip) = (port, localhost, localhost);
+        args.no_mdns = true;
+        args.name = Some("restart".into());
+        args
+    }
+
+    #[cfg(feature = "gui")]
+    fn free_udp_port() -> u16 {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap().port()
+    }
+
+    /// Wait until the presenter shows its QR/URI (Streaming), or fail with what it reported.
+    #[cfg(feature = "gui")]
+    fn wait_for_qr(p: &PresenterHandle) {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let s = p.poll();
+            assert!(
+                s.phase != PresentPhase::Failed,
+                "presenter failed: {:?}",
+                s.error
+            );
+            if s.uri.is_some() {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no QR/URI after 20 s: {:?}",
+                s.phase
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Owner report t348u: Presenter, Stop presenting, Presenter again hung with no QR. The
+    /// GUI drops the old handle and spawns the next one at once, on the same port.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn presenting_can_be_stopped_and_started_again_repeatedly() {
+        let dir = std::env::temp_dir().join(format!("mirrorwire-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let port = free_udp_port();
+        let identity = Identity::generate().unwrap();
+        for round in 0..20 {
+            let p = spawn(
+                runtime.handle().clone(),
+                restart_args(port),
+                dir.clone(),
+                identity.clone(),
+                None,
+            );
+            wait_for_qr(&p);
+            assert_eq!(p.poll().port, port, "round {round}");
+            // Stop and drop at once, like `stop_presenting`.
+            p.stop();
+            drop(p);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Stop pressed before the start has finished (the handle is dropped while the thread is
+    /// still opening the capture), then start again at once.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn stopping_during_start_up_does_not_block_the_next_start() {
+        let dir =
+            std::env::temp_dir().join(format!("mirrorwire-restart-su-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let port = free_udp_port();
+        let identity = Identity::generate().unwrap();
+        let go = || {
+            spawn(
+                runtime.handle().clone(),
+                restart_args(port),
+                dir.clone(),
+                identity.clone(),
+                None,
+            )
+        };
+        for _ in 0..20 {
+            // Stopped straight after spawning: before, during or after the capture opened.
+            let early = go();
+            early.stop();
+            drop(early);
+            let next = go();
+            wait_for_qr(&next);
+            next.stop();
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An old session that cannot finish (e.g. a portal dialog nobody answered) must not make
+    /// the next start look dead: the window says why it waits, Stop still works while waiting,
+    /// and the start goes through the moment the old one is gone.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn a_start_behind_a_stuck_session_says_so_and_goes_on_when_it_ends() {
+        use std::time::{Duration, Instant};
+        let dir =
+            std::env::temp_dir().join(format!("mirrorwire-restart-stuck-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let identity = Identity::generate().unwrap();
+        let port = free_udp_port();
+        let go = || {
+            spawn(
+                runtime.handle().clone(),
+                restart_args(port),
+                dir.clone(),
+                identity.clone(),
+                None,
+            )
+        };
+        let old_session = SESSION_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        let waiting = go();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while waiting.poll().note.is_none() {
+            assert!(Instant::now() < deadline, "no note while waiting");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let s = waiting.poll();
+        assert_eq!(s.phase, PresentPhase::Starting);
+        assert!(s.uri.is_none());
+        // Stop while waiting ends that start without ever opening anything.
+        waiting.stop();
+        while waiting.poll().phase != PresentPhase::Stopped {
+            assert!(
+                Instant::now() < deadline,
+                "stop did not end the waiting start"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let again = go();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(again.poll().uri.is_none());
+        drop(old_session);
+        wait_for_qr(&again);
+        assert!(again.poll().note.is_none());
+        again.stop();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Stopping while a viewer is connected: its connection is closed, and the same port is
+    /// bound again by the next start, which the viewer can then reach.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn stopping_with_a_viewer_connected_frees_the_port_for_the_next_start() {
+        use crate::viewer::{self, ViewerOptions};
+        use std::time::{Duration, Instant};
+        let dir =
+            std::env::temp_dir().join(format!("mirrorwire-restart-vw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let port = free_udp_port();
+        let identity = Identity::generate().unwrap();
+        let viewer_id = Arc::new(Identity::generate().unwrap());
+        for round in 0..3 {
+            let p = spawn(
+                runtime.handle().clone(),
+                restart_args(port),
+                dir.clone(),
+                identity.clone(),
+                None,
+            );
+            wait_for_qr(&p);
+            let target = ConnectInfo::parse(&p.poll().uri.unwrap()).unwrap();
+            let view = viewer::spawn(
+                runtime.handle(),
+                viewer_id.clone(),
+                target,
+                ViewerOptions {
+                    hwdec: false,
+                    software_decoder: mirrorwire_media::decode::SoftwareDecoder::platform_default(),
+                    simulate_loss: 0.0,
+                    simulate_burst: 1.0,
+                    simulate_bandwidth_kbps: 0,
+                    rgba: true,
+                    name: "restart viewer".into(),
+                    display: mirrorwire_proto::control::DisplayInfo::from_points(
+                        1920.0, 1080.0, 1.0,
+                    ),
+                },
+                None,
+            );
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !p.poll().viewer_connected || view.frames.try_recv().is_err() {
+                assert!(
+                    Instant::now() < deadline,
+                    "round {round}: viewer never got video"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            p.stop();
+            drop(p);
+            view.stop();
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// End to end in one process: test-pattern presenter (x264) -> QUIC ->

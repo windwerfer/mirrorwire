@@ -69,6 +69,8 @@ pub struct PresentStatus {
     pub port: u16,
     pub viewer_connected: bool,
     pub error: Option<String>,
+    /// Why the start is taking a while (an earlier session still closing), shown in the window.
+    pub note: Option<String>,
     pub rc_summary: Option<String>,
     pub conversion: Option<String>,
     pub firewall: Option<FirewallHint>,
@@ -94,6 +96,7 @@ impl PresentStatus {
             port,
             viewer_connected: false,
             error: None,
+            note: None,
             rc_summary: None,
             conversion: None,
             firewall: None,

@@ -1,5 +1,12 @@
 # HANDOFF
 
+## Presenter restart hang (2026-11-28, t348u)
+- Cause: `PresenterHandle` stop/drop only sets `Controls.stop`; the `present` thread is detached (`presenter/mod.rs` `Drop`). `start_presenting` spawns the next session at once, which ran in parallel with the closing one: same UDP port still bound (`binding QUIC endpoint: Address already in use`, reproduced) and a second portal ScreenCast session while the first closes. A stuck old session (unanswered portal dialog in `PortalSource::open`) left the new start silent.
+- Fix: process-wide `SESSION_SLOT` (the new thread waits for the old one, note in the window after 0.5 s, Stop works while waiting) + `wait_for_port` (<= 5 s) before `Presenter::start`. New `PresentStatus.note`.
+- Tests (presenter/mod.rs): `presenting_can_be_stopped_and_started_again_repeatedly` (20x), `stopping_during_start_up_does_not_block_the_next_start`, `a_start_behind_a_stuck_session_says_so_and_goes_on_when_it_ends`, `stopping_with_a_viewer_connected_frees_the_port_for_the_next_start`. All 4 fail without the fix, pass with it. Test-pattern source; the real portal/PipeWire path is NOT run here (no portal on the box).
+- Checked, no change: viewer (no fixed port, async task), Miracast (`wait_for_miracast_cleanup` already waits, but on the UI thread up to 5 s: debt), camera scan, Android (viewer only).
+- Not covered: stop while the portal dialog is open still cannot cancel `PortalSource::open` (blocks on the dialog); the next start now says so instead of hanging silently.
+
 ## Fuzz + ASan fix (2026-11-26)
 - Goal: scheduled run 45820162519 failed (both jobs, <1 min). Cause: `rust-toolchain.toml` pins 1.100.0 and rustup prefers it over the nightly dtolnay installs, so plain cargo ran stable and rejected `-Zsanitizer=address`.
 - Done: `fuzz.yml` sets workflow-level `RUSTUP_TOOLCHAIN: nightly` (with a comment) and prints `rustc -vV` at the start of each job. Notes added to testing.md and decisions.md (follow-up to D18). Pin, fuzz targets, sanitizer flags untouched.

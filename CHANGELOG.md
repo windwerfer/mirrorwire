@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Presenter: **Stop presenting, then Presenter again** no longer hangs without a QR code
+  (owner report t348u). Stop only signalled the old session, whose thread was left running; the
+  next start ran next to it and met the still-bound UDP port (`binding QUIC endpoint: Address
+  already in use`) and a portal session that was still closing. A new start now waits, on its
+  own thread, until the old session is completely closed (and for its port), says so in the
+  window if that takes more than half a second, and Stop still works while it waits.
+
 ## 0.2.2
 
 ### Breaking

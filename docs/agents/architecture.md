@@ -130,6 +130,12 @@ macOS: `~/Library/Application Support/mirrorwire`), overridable with `--config-d
 
 Deleting the directory resets identity and pairings; viewers then see a new fingerprint.
 
+One presenter session runs at a time per process (`SESSION_SLOT` in `presenter/mod.rs`). Stop
+only raises a flag and the GUI drops the handle at once, so the old `present` thread is still
+closing its portal session, PipeWire stream and QUIC endpoint when the user presses Presenter
+again. The new thread waits for the slot (window note after 0.5 s; Stop works meanwhile) and
+`wait_for_port` waits for the old UDP socket to be released before binding (t348u).
+
 The presenter UDP port defaults to 47800. A changed port is what mDNS advertises and
 what the QR/`mirrorwire://` URI contains, so the viewer does not need a matching
 setting. On Linux the presenter probes firewalld over the system bus when it can

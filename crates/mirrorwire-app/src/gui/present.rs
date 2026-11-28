@@ -30,6 +30,9 @@ impl MirrorApp {
 
                 match status.phase {
                     PresentPhase::Starting | PresentPhase::WaitingForCapture => {
+                        if let Some(note) = &status.note {
+                            ui.colored_label(egui::Color32::from_rgb(230, 160, 40), note);
+                        }
                         ui.label("Waiting for the screen share dialog…");
                         ui.weak("Choose the display or window to share, then come back to this window for the pairing code.");
                         firewall_panel(ui, self, status.firewall.as_ref(), false);
