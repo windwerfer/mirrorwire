@@ -224,6 +224,72 @@ pub fn pointer_in_rect(px: f32, py: f32, rect: (f32, f32, f32, f32)) -> Option<(
     Some((f((px - l) / w), f((py - t) / h)))
 }
 
+/// What the viewers' pen mode turns the local pointer into: one copy for the desktop and the
+/// Android viewer. A press sends `Down`, a release `Up`, and every other position sends `Move`,
+/// **also while nothing is pressed** (hover: the presenter's cursor follows the pen in
+/// proximity; `Move` never presses a button). Moves are coalesced to about 60 per second, and
+/// a hover that did not change position is not sent again.
+#[derive(Debug, Default)]
+pub struct PenSampler {
+    down: bool,
+    last_move: Option<std::time::Instant>,
+    last_hover: Option<(u16, u16)>,
+}
+
+impl PenSampler {
+    const MIN_MOVE_GAP: std::time::Duration = std::time::Duration::from_millis(16);
+
+    /// Is a stroke (a pressed button on the presenter) in progress?
+    pub fn is_down(&self) -> bool {
+        self.down
+    }
+
+    /// Forget a stroke without sending anything (pen mode left). Returns whether a release
+    /// must be sent so the presenter's button is not stuck.
+    pub fn cancel(&mut self) -> bool {
+        self.last_hover = None;
+        std::mem::take(&mut self.down)
+    }
+
+    /// One frame. `pos` is the wire position of the local pointer inside the picture (`None`:
+    /// outside or unknown), `over` whether the pointer is over the picture, `pressed` a press
+    /// edge this frame, `released` that the button is not held. Returns the phase to send.
+    pub fn step(
+        &mut self,
+        pos: Option<(u16, u16)>,
+        over: bool,
+        pressed: bool,
+        released: bool,
+        now: std::time::Instant,
+    ) -> Option<(PointerPhase, u16, u16)> {
+        let (x, y) = pos?;
+        if pressed && over && !self.down {
+            self.down = true;
+            self.last_hover = None;
+            return Some((PointerPhase::Down, x, y));
+        }
+        if self.down && released {
+            self.down = false;
+            self.last_hover = Some((x, y));
+            return Some((PointerPhase::Up, x, y));
+        }
+        if !self.down && (!over || self.last_hover == Some((x, y))) {
+            return None;
+        }
+        if self
+            .last_move
+            .is_some_and(|t| now.duration_since(t) < Self::MIN_MOVE_GAP)
+        {
+            return None;
+        }
+        self.last_move = Some(now);
+        if !self.down {
+            self.last_hover = Some((x, y));
+        }
+        Some((PointerPhase::Move, x, y))
+    }
+}
+
 /// Wire pressure for a sensor reading `force` (0.0 = none, 1.0 = full, as egui reports
 /// touch force). `None` for no reading or a value that is not finite; clamped otherwise.
 pub fn pressure_from_force(force: Option<f32>) -> Option<u16> {
@@ -382,6 +448,98 @@ impl Control {
 
 #[cfg(test)]
 mod tests {
+    // --- PenSampler: hover (pen in proximity, tip up) must reach the presenter ---
+
+    fn at(t0: std::time::Instant, ms: u64) -> std::time::Instant {
+        t0 + std::time::Duration::from_millis(ms)
+    }
+
+    /// Before the fix both viewers sent nothing unless the tip was down: a hovering pen never
+    /// moved the presenter's cursor.
+    #[test]
+    fn hover_without_contact_sends_moves() {
+        let t0 = std::time::Instant::now();
+        let mut s = PenSampler::default();
+        assert_eq!(
+            s.step(Some((10, 20)), true, false, false, t0),
+            Some((PointerPhase::Move, 10, 20))
+        );
+        assert!(!s.is_down());
+        assert_eq!(
+            s.step(Some((30, 40)), true, false, false, at(t0, 20)),
+            Some((PointerPhase::Move, 30, 40))
+        );
+        assert!(!s.is_down());
+    }
+
+    #[test]
+    fn hover_is_coalesced_and_not_repeated_when_still() {
+        let t0 = std::time::Instant::now();
+        let mut s = PenSampler::default();
+        assert!(s.step(Some((1, 1)), true, false, false, t0).is_some());
+        // Too soon, and then the same place again.
+        assert_eq!(s.step(Some((2, 2)), true, false, false, at(t0, 5)), None);
+        assert!(s
+            .step(Some((2, 2)), true, false, false, at(t0, 20))
+            .is_some());
+        assert_eq!(s.step(Some((2, 2)), true, false, false, at(t0, 40)), None);
+    }
+
+    #[test]
+    fn no_hover_outside_the_picture() {
+        let t0 = std::time::Instant::now();
+        let mut s = PenSampler::default();
+        assert_eq!(s.step(Some((1, 1)), false, false, false, t0), None);
+        assert_eq!(s.step(None, true, false, false, t0), None);
+    }
+
+    /// Hover, touch down, stroke, lift, hover again: contact still sends Down/Move/Up and the
+    /// hover around it never presses (only `Down` does) or leaves the button pressed.
+    #[test]
+    fn contact_still_works_between_hovers_and_up_always_follows_down() {
+        let t0 = std::time::Instant::now();
+        let mut s = PenSampler::default();
+        let mut sent = Vec::new();
+        let mut run = |s: &mut PenSampler, p, over, pressed, released, ms| {
+            if let Some((ph, _, _)) = s.step(Some(p), over, pressed, released, at(t0, ms)) {
+                sent.push(ph);
+            }
+        };
+        run(&mut s, (1, 1), true, false, true, 0); // hover
+        run(&mut s, (2, 2), true, true, false, 20); // tip down
+        assert!(s.is_down());
+        run(&mut s, (3, 3), true, false, false, 40); // stroke
+        run(&mut s, (4, 4), true, false, true, 60); // lift
+        assert!(!s.is_down());
+        run(&mut s, (5, 5), true, false, true, 80); // hover after the lift
+        assert_eq!(
+            sent,
+            [
+                PointerPhase::Move,
+                PointerPhase::Down,
+                PointerPhase::Move,
+                PointerPhase::Up,
+                PointerPhase::Move
+            ]
+        );
+    }
+
+    /// Leaving the picture mid-stroke still ends the stroke; hover exit (pointer leaves while
+    /// not down) sends nothing that could press.
+    #[test]
+    fn stroke_ends_outside_and_cancel_releases_once() {
+        let t0 = std::time::Instant::now();
+        let mut s = PenSampler::default();
+        s.step(Some((1, 1)), true, true, false, t0);
+        assert_eq!(
+            s.step(Some((9, 9)), false, false, true, at(t0, 20)),
+            Some((PointerPhase::Up, 9, 9))
+        );
+        s.step(Some((1, 1)), true, true, false, at(t0, 40));
+        assert!(s.cancel());
+        assert!(!s.cancel());
+    }
+
     use super::*;
 
     #[test]
