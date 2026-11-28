@@ -1026,14 +1026,25 @@ fn wait_for_slot(
 /// The UDP port of a session that just ended is released a moment after its endpoint is
 /// closed (the QUIC driver task has to finish, and with a viewer connected it first drains
 /// the connection). Wait until the port can be bound again; a port taken by another program
-/// stays taken, and the real bind then reports it.
+/// stays taken, and the real bind then reports it. Measured with a viewer that reconnects
+/// by itself (t350u): the old endpoint can hold the port until its QUIC idle timeout (10 s,
+/// seen 9.5 to 9.7 s) even though every session task has ended, so the wait is longer than
+/// that.
 fn wait_for_port(bind: SocketAddr) {
     if bind.port() == 0 {
         return;
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let started = std::time::Instant::now();
+    let deadline = started + std::time::Duration::from_secs(15);
     while std::net::UdpSocket::bind(bind).is_err() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    if started.elapsed() > std::time::Duration::from_millis(500) {
+        tracing::info!(
+            "UDP port {} was held by the previous session for {:.1} s",
+            bind.port(),
+            started.elapsed().as_secs_f64()
+        );
     }
 }
 
@@ -1439,7 +1450,7 @@ mod tests {
     #[cfg(feature = "gui")]
     fn wait_for_qr(p: &PresenterHandle) {
         use std::time::{Duration, Instant};
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let s = p.poll();
             assert!(
@@ -1452,7 +1463,7 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "no QR/URI after 20 s: {:?}",
+                "no QR/URI after 30 s: {:?}",
                 s.phase
             );
             std::thread::sleep(Duration::from_millis(5));
@@ -1627,6 +1638,7 @@ mod tests {
                     display: mirrorwire_proto::control::DisplayInfo::from_points(
                         1920.0, 1080.0, 1.0,
                     ),
+                    reconnect: None,
                 },
                 None,
             );
@@ -1642,6 +1654,257 @@ mod tests {
             drop(p);
             view.stop();
         }
+        wait_until_all_sessions_closed();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(feature = "gui")]
+    fn reconnecting_viewer(
+        runtime: &tokio::runtime::Runtime,
+        id: &Arc<Identity>,
+        target: ConnectInfo,
+        policy: Option<crate::viewer::ReconnectPolicy>,
+    ) -> crate::viewer::ViewerHandle {
+        crate::viewer::spawn(
+            runtime.handle(),
+            id.clone(),
+            target,
+            crate::viewer::ViewerOptions {
+                hwdec: false,
+                software_decoder: mirrorwire_media::decode::SoftwareDecoder::platform_default(),
+                simulate_loss: 0.0,
+                simulate_burst: 1.0,
+                simulate_bandwidth_kbps: 0,
+                rgba: true,
+                name: "reconnect viewer".into(),
+                display: mirrorwire_proto::control::DisplayInfo::from_points(1920.0, 1080.0, 1.0),
+                reconnect: policy,
+            },
+            None,
+        )
+    }
+
+    /// Polls `cond` (no fixed sleeps) until it holds, or fails with `what` after 30 s.
+    #[cfg(feature = "gui")]
+    fn until(what: &str, mut cond: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        while !cond() {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[cfg(feature = "gui")]
+    fn fast_policy(window_secs: u64) -> crate::viewer::ReconnectPolicy {
+        crate::viewer::ReconnectPolicy {
+            window: std::time::Duration::from_secs(window_secs),
+            interval: std::time::Duration::from_millis(50),
+            attempt_timeout: std::time::Duration::from_secs(2),
+        }
+    }
+
+    /// Owner report t350u: the presenter stops while a viewer is connected and starts again;
+    /// the viewer must say so, then pick the new session up by itself (new pairing code every
+    /// start; the viewer is paired by certificate). The second round starts late: the viewer
+    /// has already tried several times when the presenter is back.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn a_connected_viewer_follows_the_presenter_through_a_restart() {
+        let dir = std::env::temp_dir().join(format!("mirrorwire-follow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let port = free_udp_port();
+        let identity = Identity::generate().unwrap();
+        let viewer_id = Arc::new(Identity::generate().unwrap());
+        let start = || {
+            let p = spawn(
+                runtime.handle().clone(),
+                restart_args(port),
+                dir.clone(),
+                identity.clone(),
+                None,
+            );
+            wait_for_qr(&p);
+            p
+        };
+        let mut p = start();
+        let target = ConnectInfo::parse(&p.poll().uri.unwrap()).unwrap();
+        let mut first_code = target.pairing_code.clone();
+        let view = reconnecting_viewer(&runtime, &viewer_id, target, Some(fast_policy(60)));
+        for round in 0..2 {
+            until("video from the presenter", || {
+                view.frames.try_recv().is_ok() && p.poll().viewer_connected
+            });
+            p.stop();
+            drop(p);
+            until("the viewer to notice the end", || {
+                let s = view.status.lock().unwrap();
+                !s.connected && s.reconnecting.is_some()
+            });
+            if round == 1 {
+                // A late restart: wait until the viewer has failed a few attempts.
+                until("a few failed attempts", || {
+                    view.status
+                        .lock()
+                        .unwrap()
+                        .reconnecting
+                        .as_deref()
+                        .is_some_and(|t| t.contains("attempt 4"))
+                });
+            }
+            p = start();
+            let code = ConnectInfo::parse(&p.poll().uri.unwrap())
+                .unwrap()
+                .pairing_code;
+            assert_ne!(code, first_code, "every start has a new pairing code");
+            first_code = code;
+            until("the viewer to be connected again", || {
+                let s = view.status.lock().unwrap();
+                s.connected && s.reconnecting.is_none()
+            });
+            // Frames of the NEW session arrive (drop the old session's last ones first).
+            while view.frames.try_recv().is_ok() {}
+            until("video from the new session", || {
+                view.frames.try_recv().is_ok() && p.poll().viewer_connected
+            });
+            assert!(view.status.lock().unwrap().error.is_none());
+        }
+        view.stop();
+        view.done.recv_timeout(Duration::from_secs(10)).unwrap();
+        p.stop();
+        drop(p);
+        wait_until_all_sessions_closed();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The viewer is paired with one presenter certificate: another presenter on the same
+    /// address is not followed, and the window says why.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn a_viewer_does_not_follow_a_presenter_with_another_certificate() {
+        let dir = std::env::temp_dir().join(format!("mirrorwire-pinned-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let port = free_udp_port();
+        let viewer_id = Arc::new(Identity::generate().unwrap());
+        let p = spawn(
+            runtime.handle().clone(),
+            restart_args(port),
+            dir.clone(),
+            Identity::generate().unwrap(),
+            None,
+        );
+        wait_for_qr(&p);
+        let target = ConnectInfo::parse(&p.poll().uri.unwrap()).unwrap();
+        let view = reconnecting_viewer(&runtime, &viewer_id, target, Some(fast_policy(60)));
+        until("video", || {
+            view.frames.try_recv().is_ok() && p.poll().viewer_connected
+        });
+        p.stop();
+        drop(p);
+        until("reconnecting", || {
+            view.status.lock().unwrap().reconnecting.is_some()
+        });
+        let p = spawn(
+            runtime.handle().clone(),
+            restart_args(port),
+            dir.clone(),
+            Identity::generate().unwrap(),
+            None,
+        );
+        wait_for_qr(&p);
+        until("the viewer to refuse the new certificate", || {
+            view.status.lock().unwrap().error.is_some()
+        });
+        let s = view.status.lock().unwrap().clone();
+        let err = s.error.unwrap();
+        assert!(err.contains("fingerprint mismatch"), "{err}");
+        assert!(s.reconnecting.is_none() && !s.connected);
+        p.stop();
+        drop(p);
+        wait_until_all_sessions_closed();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A presenter that never comes back: the viewer gives up after its window, with a
+    /// message (not a frozen frame), and does not keep the connection state.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn a_viewer_gives_up_when_the_presenter_does_not_come_back() {
+        let dir = std::env::temp_dir().join(format!("mirrorwire-giveup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let viewer_id = Arc::new(Identity::generate().unwrap());
+        let p = spawn(
+            runtime.handle().clone(),
+            restart_args(free_udp_port()),
+            dir.clone(),
+            Identity::generate().unwrap(),
+            None,
+        );
+        wait_for_qr(&p);
+        let target = ConnectInfo::parse(&p.poll().uri.unwrap()).unwrap();
+        let view = reconnecting_viewer(&runtime, &viewer_id, target, Some(fast_policy(1)));
+        until("video", || {
+            view.frames.try_recv().is_ok() && p.poll().viewer_connected
+        });
+        p.stop();
+        drop(p);
+        until("the viewer to give up", || {
+            view.status.lock().unwrap().error.is_some()
+        });
+        let s = view.status.lock().unwrap().clone();
+        assert!(s.error.unwrap().contains("did not come back"));
+        assert!(s.reconnecting.is_none() && !s.connected);
+        wait_until_all_sessions_closed();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Without a policy (the headless `view` command) the session just ends.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn a_viewer_without_reconnect_ends_with_the_presenter() {
+        let dir = std::env::temp_dir().join(format!("mirrorwire-noreco-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let p = spawn(
+            runtime.handle().clone(),
+            restart_args(free_udp_port()),
+            dir.clone(),
+            Identity::generate().unwrap(),
+            None,
+        );
+        wait_for_qr(&p);
+        let target = ConnectInfo::parse(&p.poll().uri.unwrap()).unwrap();
+        let view = reconnecting_viewer(
+            &runtime,
+            &Arc::new(Identity::generate().unwrap()),
+            target,
+            None,
+        );
+        until("video", || {
+            view.frames.try_recv().is_ok() && p.poll().viewer_connected
+        });
+        p.stop();
+        drop(p);
+        view.done.recv_timeout(Duration::from_secs(20)).unwrap();
+        assert!(view.status.lock().unwrap().reconnecting.is_none());
         wait_until_all_sessions_closed();
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1711,6 +1974,7 @@ mod tests {
                 rgba: true,
                 name: "e2e viewer".into(),
                 display: mirrorwire_proto::control::DisplayInfo::from_points(1920.0, 1080.0, 1.0),
+                reconnect: None,
             },
             None,
         );

@@ -44,6 +44,11 @@ impl MirrorApp {
         let status = handle.status.lock_ok().clone();
         // Tell the presenter whether we show video (again after every reconnect).
         let want_pause = self.view_mode != ViewMode::Video;
+        if status.control.is_none() {
+            // No session (connecting, or reconnecting after the presenter ended it): the next
+            // one starts without our choice, so send it again once it is up.
+            self.video_paused_sent = None;
+        }
         if let Some(tx) = &status.control {
             if self.video_paused_sent != Some(want_pause) {
                 let _ =
@@ -169,6 +174,19 @@ impl MirrorApp {
                 rect.left_top() + egui::vec2(8.0, 8.0),
                 galley,
                 egui::Color32::from_rgb(0, 255, 120),
+            );
+        }
+
+        if let Some(text) = &status.reconnecting {
+            // The last frame stays as a backdrop, dimmed, with what is going on.
+            ui.painter()
+                .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(170));
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                text,
+                egui::FontId::proportional(22.0),
+                egui::Color32::WHITE,
             );
         }
 

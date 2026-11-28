@@ -404,6 +404,7 @@ impl MirrorApp {
                         ctx.pixels_per_point(),
                     )
                 },
+                reconnect: Some(viewer::ReconnectPolicy::default()),
             },
             Some(Arc::new(move || repaint.request_repaint())),
         ));

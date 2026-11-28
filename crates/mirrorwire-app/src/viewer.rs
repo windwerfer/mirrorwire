@@ -89,6 +89,9 @@ pub struct ViewerStatus {
     pub link: LinkHud,
     /// The bottleneck verdict line (see `bottleneck.rs`), updated once a second.
     pub bottleneck: String,
+    /// Set while the presenter's session is over and the viewer tries to reach the presenter
+    /// again: what the window tells the user (instead of a frozen last frame).
+    pub reconnecting: Option<String>,
 }
 
 #[derive(Default)]
@@ -111,6 +114,7 @@ pub struct Totals {
     pub corrupt_frames: u64,
 }
 
+#[derive(Clone)]
 pub struct ViewerOptions {
     pub hwdec: bool,
     pub software_decoder: SoftwareDecoder,
@@ -122,6 +126,32 @@ pub struct ViewerOptions {
     pub name: String,
     /// This screen, sent in `hello` so Extend mode can match it (protocol 8).
     pub display: DisplayInfo,
+    /// Keep trying to reach the presenter after it ended the session (`None`: the viewer
+    /// ends with the session, as the headless `view` command does).
+    pub reconnect: Option<ReconnectPolicy>,
+}
+
+/// How long and how often a viewer whose presenter went away tries to reach it again. The
+/// presenter's next start can take a while (wait for the old session and the UDP port, the
+/// screen-share dialog), so the window is generous.
+#[derive(Clone, Copy, Debug)]
+pub struct ReconnectPolicy {
+    /// Give up (with a message in the window) after this long without a new session.
+    pub window: Duration,
+    /// Pause between two attempts.
+    pub interval: Duration,
+    /// Handshake timeout of one attempt.
+    pub attempt_timeout: Duration,
+}
+
+impl Default for ReconnectPolicy {
+    fn default() -> Self {
+        Self {
+            window: Duration::from_secs(300),
+            interval: Duration::from_secs(1),
+            attempt_timeout: Duration::from_secs(4),
+        }
+    }
 }
 
 pub struct ViewerHandle {
@@ -156,7 +186,7 @@ pub fn spawn(
         done,
     };
     runtime.spawn(async move {
-        let result = session(
+        let result = drive(
             identity,
             target,
             opts,
@@ -174,6 +204,7 @@ pub fn spawn(
                 tracing::error!("viewer: {e:#}");
                 let mut s = status.lock_ok();
                 s.connected = false;
+                s.reconnecting = None;
                 s.error = Some(format!("{e:#}"));
             }
         }
@@ -197,20 +228,28 @@ fn flush_backlog<T>(rx: &Receiver<T>) -> usize {
     n
 }
 
-async fn session(
+type Summary = (Totals, StageStats, f64);
+type Frames = (Sender<DisplayFrame>, Receiver<DisplayFrame>);
+
+/// One session's result: the summary, and whether the presenter (not the user) ended it.
+struct SessionEnd {
+    summary: Summary,
+    peer_gone: bool,
+    reason: String,
+}
+
+/// Connect, run sessions, and (if asked) reach the presenter again after it ended one.
+async fn drive(
     identity: Arc<Identity>,
-    target: ConnectInfo,
+    mut target: ConnectInfo,
     opts: ViewerOptions,
     status: Arc<Mutex<ViewerStatus>>,
-    (frames_tx, frames_drain): (Sender<DisplayFrame>, Receiver<DisplayFrame>),
+    frames: Frames,
     stop: Arc<AtomicBool>,
     on_frame: Option<Arc<dyn Fn() + Send + Sync>>,
-) -> Result<(Totals, StageStats, f64)> {
-    let trace = {
-        let s = status.lock_ok();
-        s.trace.clone()
-    };
-    let session = ViewerSession::connect_traced(
+) -> Result<Summary> {
+    let trace = status.lock_ok().trace.clone();
+    let mut conn = ViewerSession::connect_traced(
         &identity,
         &target,
         &opts.name,
@@ -219,6 +258,168 @@ async fn session(
         HANDSHAKE_TIMEOUT,
     )
     .await?;
+    loop {
+        let end = run_session(
+            conn,
+            &target,
+            opts.clone(),
+            status.clone(),
+            frames.clone(),
+            stop.clone(),
+            on_frame.clone(),
+        )
+        .await?;
+        let Some(policy) = opts.reconnect.filter(|_| end.peer_gone) else {
+            return Ok(end.summary);
+        };
+        {
+            let mut s = status.lock_ok();
+            s.control = None;
+            s.cursor = None;
+        }
+        match reconnect(
+            &identity,
+            &mut target,
+            &opts,
+            &status,
+            &stop,
+            policy,
+            &end.reason,
+        )
+        .await
+        {
+            Reconnect::Up(c) => conn = *c,
+            Reconnect::Stopped => return Ok(end.summary),
+            Reconnect::GaveUp(msg) => return Err(anyhow!(msg)),
+        }
+    }
+}
+
+enum Reconnect {
+    Up(Box<ViewerSession>),
+    Stopped,
+    GaveUp(String),
+}
+
+/// An error that more attempts cannot fix: the presenter said no, or it is another presenter
+/// than the pinned one. (Not [`mirrorwire_net::diag::is_logical_reject`]: its word search also
+/// matches the "no answer" text of a plain timeout, which is exactly what to retry.)
+fn is_final_refusal(err: &anyhow::Error) -> bool {
+    let s = format!("{err:#}");
+    !s.starts_with("No answer from")
+        && (s.contains("presenter rejected connection")
+            || s.contains("presenter fingerprint mismatch")
+            || s.contains("presenter sent no certificate"))
+}
+
+/// A presenter that restarts may listen on another port or address: take the new ones from
+/// mDNS, matched by the pinned certificate fingerprint. Returns whether the target changed.
+fn refresh_target(target: &mut ConnectInfo, seen: &[mirrorwire_net::discovery::Presenter]) -> bool {
+    let Some(p) = seen
+        .iter()
+        .find(|p| p.fingerprint.eq_ignore_ascii_case(&target.fingerprint))
+    else {
+        return false;
+    };
+    if p.addr == target.addr && p.addrs == target.addrs {
+        return false;
+    }
+    target.addr = p.addr;
+    target.addrs = p.addrs.clone();
+    true
+}
+
+async fn reconnect(
+    identity: &Identity,
+    target: &mut ConnectInfo,
+    opts: &ViewerOptions,
+    status: &Arc<Mutex<ViewerStatus>>,
+    stop: &AtomicBool,
+    policy: ReconnectPolicy,
+    reason: &str,
+) -> Reconnect {
+    let trace = status.lock_ok().trace.clone();
+    let mut browser = match mirrorwire_net::discovery::Browser::start() {
+        Ok(b) => Some(b),
+        Err(e) => {
+            tracing::warn!("reconnect: no mDNS browser ({e:#}); keeping the old address");
+            None
+        }
+    };
+    tracing::info!(
+        "presenter ended the session ({reason}); trying to reach it again for up to {} s",
+        policy.window.as_secs()
+    );
+    let started = Instant::now();
+    let mut attempt = 0u32;
+    loop {
+        // Also before the first attempt: the old presenter is still shutting down.
+        let until = Instant::now() + policy.interval;
+        while Instant::now() < until && !stop.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        if stop.load(Ordering::Acquire) {
+            status.lock_ok().reconnecting = None;
+            return Reconnect::Stopped;
+        }
+        attempt += 1;
+        if let Some(b) = browser.as_mut() {
+            if refresh_target(target, b.poll()) {
+                tracing::info!("reconnect: presenter now announced at {}", target.addr);
+            }
+        }
+        status.lock_ok().reconnecting = Some(format!(
+            "The presenter ended the session. Reconnecting to {} …\nattempt {attempt}, {} s so far",
+            target.addr,
+            started.elapsed().as_secs()
+        ));
+        tracing::info!("reconnect attempt {attempt} to {}", target.addr);
+        match ViewerSession::connect_traced(
+            identity,
+            target,
+            &opts.name,
+            opts.display,
+            &trace,
+            policy.attempt_timeout,
+        )
+        .await
+        {
+            Ok(session) => {
+                tracing::info!(
+                    "reconnected to {} after {attempt} attempt(s), {:.1} s",
+                    target.addr,
+                    started.elapsed().as_secs_f64()
+                );
+                status.lock_ok().reconnecting = None;
+                return Reconnect::Up(Box::new(session));
+            }
+            Err(e) if is_final_refusal(&e) => {
+                tracing::warn!("reconnect refused: {e:#}");
+                return Reconnect::GaveUp(format!(
+                    "The presenter ended the session and did not accept the viewer again: {e:#}"
+                ));
+            }
+            Err(e) => tracing::debug!("reconnect attempt {attempt} failed: {e:#}"),
+        }
+        if started.elapsed() >= policy.window {
+            return Reconnect::GaveUp(format!(
+                "The presenter ended the session and did not come back within {} s ({attempt} attempts). Start presenting again and reconnect.",
+                policy.window.as_secs()
+            ));
+        }
+    }
+}
+
+async fn run_session(
+    session: ViewerSession,
+    target: &ConnectInfo,
+    opts: ViewerOptions,
+    status: Arc<Mutex<ViewerStatus>>,
+    (frames_tx, frames_drain): Frames,
+    stop: Arc<AtomicBool>,
+    on_frame: Option<Arc<dyn Fn() + Send + Sync>>,
+) -> Result<SessionEnd> {
+    let trace = status.lock_ok().trace.clone();
     tracing::info!(
         "connected to {} ({}x{}@{} {} via {})",
         target.addr,
@@ -281,6 +482,7 @@ async fn session(
     let mut skipped = 0u64;
     let started = Instant::now();
     let mut link_window = LinkWindow::default();
+    let mut peer_gone = false;
     let close_reason = 'recv: loop {
         if stop.load(Ordering::Acquire) {
             break None;
@@ -294,7 +496,10 @@ async fn session(
         if let Some(datagram) = datagram {
             let datagram = match datagram {
                 Ok(d) => d,
-                Err(e) => break Some(e.to_string()),
+                Err(e) => {
+                    peer_gone = true;
+                    break Some(e.to_string());
+                }
             };
             if !got_datagram {
                 got_datagram = true;
@@ -401,11 +606,15 @@ async fn session(
         totals.cursor_images,
     ) = cursor_summary;
     totals.cursor_mode = Some(session.cursor_mode());
-    if let Some(reason) = close_reason {
+    if let Some(reason) = &close_reason {
         tracing::info!("connection closed: {reason}");
     }
     status.lock_ok().connected = false;
-    Ok((totals, all, elapsed))
+    Ok(SessionEnd {
+        summary: (totals, all, elapsed),
+        peer_gone,
+        reason: close_reason.unwrap_or_default(),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -675,6 +884,7 @@ pub fn run_headless(args: ViewArgs, config_dir: &Path) -> Result<()> {
                 .clone()
                 .unwrap_or_else(|| format!("{} (headless)", crate::default_name())),
             display: DisplayInfo::from_points(1920.0, 1080.0, 1.0),
+            reconnect: None,
         },
         None,
     );
@@ -761,7 +971,71 @@ fn print_summary((totals, stats, secs): &(Totals, StageStats, f64)) {
 
 #[cfg(test)]
 mod tests {
-    use super::{viewer_ui, ViewerUi};
+    use super::{is_final_refusal, refresh_target, viewer_ui, ViewerUi};
+    use mirrorwire_net::discovery::Presenter;
+    use mirrorwire_net::pairing::ConnectInfo;
+
+    const FP: &str = "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12";
+
+    fn target() -> ConnectInfo {
+        ConnectInfo {
+            addr: "192.168.1.5:47800".parse().unwrap(),
+            addrs: Vec::new(),
+            fingerprint: FP.into(),
+            pairing_code: Some("123456".into()),
+            name: None,
+        }
+    }
+
+    fn announced(fp: &str, addr: &str) -> Presenter {
+        Presenter {
+            name: "p".into(),
+            addr: addr.parse().unwrap(),
+            addrs: vec![addr.parse().unwrap()],
+            fingerprint: fp.into(),
+            resolution: None,
+            protocol: Some(mirrorwire_proto::PROTOCOL_VERSION),
+        }
+    }
+
+    #[test]
+    fn a_restarted_presenter_is_found_again_by_its_certificate_on_a_new_port() {
+        let mut t = target();
+        assert!(!refresh_target(&mut t, &[]));
+        // Another presenter's announcement is not followed.
+        assert!(!refresh_target(
+            &mut t,
+            &[announced(&"0".repeat(64), "192.168.1.9:1")]
+        ));
+        assert_eq!(t.addr.port(), 47800);
+        assert!(refresh_target(
+            &mut t,
+            &[announced(&FP.to_uppercase(), "192.168.1.5:47811")]
+        ));
+        assert_eq!(t.addr, "192.168.1.5:47811".parse().unwrap());
+        assert_eq!(t.addrs.len(), 1);
+        // Same announcement again: nothing changes.
+        assert!(!refresh_target(
+            &mut t,
+            &[announced(FP, "192.168.1.5:47811")]
+        ));
+    }
+
+    #[test]
+    fn only_a_refusal_ends_the_retries_not_a_silent_presenter() {
+        let e = |s: &str| anyhow::anyhow!("{s}");
+        assert!(is_final_refusal(&e(
+            "presenter rejected connection: not paired"
+        )));
+        assert!(is_final_refusal(&e(
+            "presenter fingerprint mismatch: expected a, got b"
+        )));
+        // The "no answer" text mentions the fingerprint/pairing words but must be retried.
+        assert!(!is_final_refusal(&e(
+            "No answer from 1.2.3.4:5 (UDP). timed out waiting for pairing / stream info. fingerprint"
+        )));
+        assert!(!is_final_refusal(&e("connection reset by peer")));
+    }
 
     #[test]
     fn backlog_flush_empties_the_bounded_queue() {
