@@ -40,3 +40,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 
 [profile.release]
 debug = 1
+
+# Android viewer: winit 0.30.13 with one change in platform_impl/android/mod.rs (stylus/mouse
+# hover as CursorEntered/Moved/Left; upstream drops it). See vendor/winit/MIRRORWIRE.md.
+[patch.crates-io]
+winit = { path = "vendor/winit" }
