@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Fixed
+- Pen mode: **a hovering pen now moves the presenter's cursor** (owner report: hover was not
+  visible on the presenter). Cause: both viewers sent `pointer` messages only between pen down
+  and pen up, so a pen in proximity with the tip up never left the viewer; on the Android viewer
+  winit also discarded the hover events (`ACTION_HOVER_*`, upstream "TODO mouse events") before
+  egui saw them, and the opt-in uinput pen swallowed tip-up moves. Now hover is sent as a
+  `move` with pressure 0 (about 60/s, not repeated when still, also in "Wacom pen (no video)"
+  mode), the uinput router hands tip-up moves to the portal pointer, and the Android build uses
+  a vendored winit 0.30.13 (`vendor/winit`, one marked change) that reports hover as cursor
+  events. **No protocol change (still 12)**; the Android APK and the desktop viewer must be
+  rebuilt for the fix, the presenter needs no change for the portal path. Hover never presses
+  a button; nothing is injected before the pen permission is granted.
 - Desktop viewer: **follows a presenter that stops and starts again** (owner report t350u).
   The viewer had no reconnect at all: when the presenter ended the session, the window kept
   the last frame frozen with no message, and the user had to leave and connect again. Now it
