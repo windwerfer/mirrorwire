@@ -31,7 +31,7 @@ rqrr = { version = "0.11", default-features = false }
 if-addrs = "0.15"
 hostname = "0.4"
 dirs = "7"
-getrandom = "0.3"
+getrandom = "0.4"
 url = "2"
 # Local wall-clock time for log stamps without libc FFI (safe; replaces localtime_r).
 tz-rs = "0.7"
