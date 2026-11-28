@@ -9,6 +9,8 @@
   already in use`) and a portal session that was still closing. A new start now waits, on its
   own thread, until the old session is completely closed (and for its port), says so in the
   window if that takes more than half a second, and Stop still works while it waits.
+- Miracast sink: a signal that interrupts the RTSP read (EINTR) no longer ends the session;
+  it is treated like a read timeout.
 
 ## 0.2.2
 

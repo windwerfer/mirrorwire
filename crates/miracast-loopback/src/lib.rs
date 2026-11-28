@@ -322,7 +322,11 @@ pub fn run_sink_logged(
             Err(e)
                 if matches!(
                     e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    // A signal (e.g. SIGCHLD of a child process that ended) interrupts a read
+                    // that has a timeout; that is not the end of the session.
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
                 ) => {}
             Err(_) => break,
         }
@@ -558,7 +562,10 @@ impl TestSource {
                 return m;
             }
             let mut b = [0u8; 2048];
-            let n = self.tcp.read(&mut b).expect("RTSP read");
+            let n = match self.tcp.read(&mut b) {
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                r => r.expect("RTSP read"),
+            };
             assert!(n > 0, "sink closed the RTSP connection");
             self.buf.extend_from_slice(&b[..n]);
         }

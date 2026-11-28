@@ -1427,6 +1427,14 @@ mod tests {
         s.local_addr().unwrap().port()
     }
 
+    /// Returns once the last session of this test has closed completely. A test must not end
+    /// (and drop its runtime) under a `present` thread that is still tearing down: that
+    /// made the unrelated Miracast RTSP test in this binary fail about one run in four.
+    #[cfg(feature = "gui")]
+    fn wait_until_all_sessions_closed() {
+        drop(SESSION_SLOT.lock().unwrap_or_else(|e| e.into_inner()));
+    }
+
     /// Wait until the presenter shows its QR/URI (Streaming), or fail with what it reported.
     #[cfg(feature = "gui")]
     fn wait_for_qr(p: &PresenterHandle) {
@@ -1479,6 +1487,7 @@ mod tests {
             p.stop();
             drop(p);
         }
+        wait_until_all_sessions_closed();
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1515,6 +1524,7 @@ mod tests {
             wait_for_qr(&next);
             next.stop();
         }
+        wait_until_all_sessions_closed();
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1570,6 +1580,7 @@ mod tests {
         wait_for_qr(&again);
         assert!(again.poll().note.is_none());
         again.stop();
+        wait_until_all_sessions_closed();
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1631,6 +1642,7 @@ mod tests {
             drop(p);
             view.stop();
         }
+        wait_until_all_sessions_closed();
         std::fs::remove_dir_all(&dir).ok();
     }
 
