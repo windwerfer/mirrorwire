@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Fixed
+- Desktop viewer: **follows a presenter that stops and starts again** (owner report t350u).
+  The viewer had no reconnect at all: when the presenter ended the session, the window kept
+  the last frame frozen with no message, and the user had to leave and connect again. Now it
+  shows "The presenter ended the session. Reconnecting …" over the dimmed last frame and tries
+  again every second for up to 5 minutes, re-reading the presenter's address from mDNS by
+  certificate fingerprint (a new port is found); a refusal (another certificate, not paired)
+  stops it with the reason, and so does the end of the window. The headless `view` command
+  still ends with the session. A new start waits up to 15 s (was 5 s) for the UDP port: with
+  a retrying viewer the old endpoint was measured holding the port for 9.5 to 9.7 s (the QUIC
+  idle timeout).
 - Presenter: **Stop presenting, then Presenter again** no longer hangs without a QR code
   (owner report t348u). Stop only signalled the old session, whose thread was left running; the
   next start ran next to it and met the still-bound UDP port (`binding QUIC endpoint: Address
